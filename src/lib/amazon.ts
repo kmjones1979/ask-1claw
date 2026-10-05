@@ -436,9 +436,17 @@ export async function goToCheckout() {
   return { ok: where === "checkout", cart_items: cart.items, ...(await checkoutSummary()), url: p.url() };
 }
 
+const totals = globalThis as { __checkoutTotal?: { usd: number; at: number } };
+
+/** The order total last read from Amazon's checkout page — the only amount a card may be ordered for. */
+export function lastCheckoutTotal() {
+  const t = totals.__checkoutTotal;
+  return t && Date.now() - t.at < 30 * 60_000 ? t.usd : null;
+}
+
 export async function checkoutSummary() {
   const p = await page();
-  return p.evaluate(() => {
+  const summary = await p.evaluate(() => {
     const clean = (s?: string | null) => (s ?? "").replace(/\s+/g, " ").trim();
     const body = document.body.innerText;
     const total =
@@ -451,6 +459,9 @@ export async function checkoutSummary() {
       delivery: body.match(/(Arriving|Delivery|Get it)[^\n]{0,60}/i)?.[0],
     };
   });
+  const usd = Number(summary.order_total?.match(/\$\s*([\d,]+\.\d{2})/)?.[1]?.replace(/,/g, ""));
+  if (usd > 0) totals.__checkoutTotal = { usd, at: Date.now() };
+  return { ...summary, order_total_usd: usd > 0 ? usd : null };
 }
 
 export async function placeOrder() {

@@ -57,18 +57,17 @@ export const tools = {
 
   issue_card: tool({
     description:
-      "Buy a prepaid virtual card from Laso Finance through 1Claw, paid with the agent's USDC on Base (x402). " +
-      "Returns a masked card (id, status, last4). May require human approval in the 1Claw app. " +
-      "Order enough to cover the item, tax and shipping with a small buffer.",
-    inputSchema: z.object({
-      amount_usd: z.string().describe('Amount to load, e.g. "30.00"'),
-    }),
-    execute: ({ amount_usd }) =>
+      "Buy a prepaid virtual card from Laso Finance through 1Claw, paid with the agent's USDC on Base (x402), " +
+      "for EXACTLY the order total shown at Amazon checkout. Call amazon_checkout first — the amount is taken from it, not chosen by you. " +
+      "Returns a masked card (id, status, last4). If it fails, do not retry more than once.",
+    inputSchema: z.object({}),
+    execute: () =>
       safe(async () => {
-        if (Number(amount_usd) > MAX_CARD_USD) {
-          return { ok: false, error: `Amount exceeds the $${MAX_CARD_USD} demo limit.` };
-        }
-        return oneclaw.orderCard(Number(amount_usd).toFixed(2));
+        const total = amazon.lastCheckoutTotal();
+        if (!total) return { ok: false, error: "No checkout total yet. Call amazon_checkout first so the card matches the order total." };
+        if (total < 5) return { ok: false, error: `Order total $${total.toFixed(2)} is below Laso's $5 card minimum.` };
+        if (total > MAX_CARD_USD) return { ok: false, error: `Order total $${total.toFixed(2)} exceeds the $${MAX_CARD_USD} card limit.` };
+        return { ...(await oneclaw.orderCard(total.toFixed(2))), amount_usd: total.toFixed(2) };
       }, "issue_card"),
   }),
 
