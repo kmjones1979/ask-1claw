@@ -365,7 +365,12 @@ export async function selectCardAtCheckout(last4: string) {
   // Confirm, then wait to leave the payment step.
   if (!(await clickText("Use this payment method"))) return { ok: false, error: "No 'Use this payment method' button." };
   // Amazon shows "Setting your payment method…" before moving to the review (/spc) page.
-  const left = await waitForAny({ spc: "url=/spc" }, 15_000);
+  let left = await waitForAny({ spc: "url=/spc", billing: "text=Select a billing address" }, 15_000);
+  // A newly added card can make Amazon ask for its billing address: use the demo address.
+  if (left === "billing" && shipToMatch()) {
+    await chooseAddressOnPage(shipToMatch());
+    left = await waitForAny({ spc: "url=/spc" }, 15_000);
+  }
   await waitForAny({ paying: "text=Paying with" }, 5_000);
   await guardHuman();
   const summary = await checkoutSummary();
@@ -441,18 +446,29 @@ export async function addToCart(asin: string) {
       document.querySelector("#corePrice_feature_div .a-offscreen, #corePriceDisplay_desktop_feature_div .a-offscreen, .a-price .a-offscreen")
         ?.textContent?.trim(),
   }));
-  await clickSel("#add-to-cart-button");
-  const after = await waitForAny(
-    {
-      added: "text=Added to cart",
-      sheet: "#attach-warranty-pane, #attachDisplayAddBaseAlert, #sw-atc-details-single-container",
-      cart: "#sw-gtc, #nav-cart-count",
-    },
-    10_000,
-  );
+  const cartCount = () =>
+    p.evaluate(() => Number(document.querySelector("#nav-cart-count")?.textContent?.trim() || 0)).catch(() => 0);
+  const before = await cartCount();
+  // Verify by the cart count actually going up — the nav cart counter exists on every page,
+  // so its presence alone proves nothing. Retry once if the first click landed before the
+  // page's scripts were ready.
+  let added = false;
+  for (let attempt = 0; attempt < 2 && !added; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+    await clickSel("#add-to-cart-button");
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      if ((await cartCount()) > before) { added = true; break; }
+      const confirmed = await p
+        .evaluate(() => /added to (your )?cart/i.test(document.body.innerText.slice(0, 20_000)))
+        .catch(() => false);
+      if (confirmed) { added = true; break; }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
   // Decline protection-plan upsells if the side sheet shows them.
   await clickSel("#attachSiNoCoverage, #attach-warranty-pane input[aria-labelledby*='noCoverage']").catch(() => false);
-  return { ok: Boolean(after), ...info };
+  return added ? { ok: true, ...info } : { ok: false, error: "Clicked Add to Cart but the cart didn't change.", ...info };
 }
 
 export async function viewCart() {
@@ -467,6 +483,77 @@ export async function viewCart() {
     })),
     subtotal: document.querySelector("#sc-subtotal-amount-activecart, #sc-subtotal-amount-buybox")?.textContent?.trim(),
   }));
+}
+
+/** Address the demo ships to (and bills to). Matched against Amazon's saved address rows. */
+export function shipToMatch() {
+  return (process.env.SHIP_TO_MATCH ?? "").trim();
+}
+
+/**
+ * On a checkout address list (delivery or billing), select the saved address whose row
+ * contains `match`, then confirm with "Deliver to this address" / "Use this address".
+ */
+async function chooseAddressOnPage(match: string) {
+  const p = await page();
+  const found = await p.evaluate((m) => {
+    const want = m.toLowerCase();
+    for (const r of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]'))) {
+      if (r.getBoundingClientRect().width === 0 && !r.closest("label")) continue;
+      let row: HTMLElement | null = r.parentElement;
+      for (let i = 0; row && i < 6 && !(row.innerText ?? "").toLowerCase().includes(want); i++) row = row.parentElement;
+      if (row && row.innerText.toLowerCase().includes(want) && row.querySelectorAll('input[type="radio"]').length === 1) {
+        r.setAttribute("data-agent-target", "1");
+        return { checked: r.checked };
+      }
+    }
+    return null;
+  }, match);
+  if (!found) return false;
+  if (!found.checked) await clickSel('[data-agent-target="1"]');
+  await p.evaluate(() => document.querySelectorAll("[data-agent-target]").forEach((e) => e.removeAttribute("data-agent-target")));
+  await new Promise((r) => setTimeout(r, 400));
+  return (await clickText("Deliver to this address")) || (await clickText("Use this address"));
+}
+
+/**
+ * Make sure checkout delivers (and, when Amazon asks, bills) to the demo address.
+ * Handles the delivery picker, the billing picker, and an already-filled review page.
+ */
+async function ensureCheckoutAddress(match: string) {
+  const p = await page();
+  const want = match.toLowerCase();
+  for (let step = 0; step < 5; step++) {
+    const state = await p.evaluate(() => {
+      const t = document.body.innerText;
+      return {
+        deliveryPicker: /select a delivery address/i.test(t),
+        billingPicker: /select a billing address/i.test(t),
+        delivering: (t.match(/Delivering to[^\n]*\n+([^\n]+)/i)?.[1] ?? "").trim(),
+      };
+    });
+    if (state.deliveryPicker || state.billingPicker) {
+      if (!(await chooseAddressOnPage(match))) return { ok: false, error: `Saved address matching "${match}" not found at checkout.` };
+      await waitForAny({ moved: "url=/pay", spc: "url=/spc", billing: "url=/billing" }, 8_000);
+      await new Promise((r) => setTimeout(r, 1200));
+      continue;
+    }
+    if (state.delivering && !state.delivering.toLowerCase().includes(want)) {
+      const opened = await p.evaluate(() => {
+        const a = Array.from(document.querySelectorAll<HTMLElement>("a, button")).find(
+          (e) => e.getBoundingClientRect().width > 0 && /change delivery address/i.test(e.getAttribute("aria-label") ?? ""),
+        );
+        a?.setAttribute("data-agent-target", "1");
+        return Boolean(a);
+      });
+      if (!opened) return { ok: false, error: "Couldn't open the delivery address picker." };
+      await clickSel('[data-agent-target="1"]');
+      await waitForAny({ picker: "text=Select a delivery address" }, 8_000);
+      continue;
+    }
+    return { ok: true };
+  }
+  return { ok: false, error: "Couldn't settle the checkout address." };
 }
 
 export async function goToCheckout() {
@@ -494,6 +581,13 @@ export async function goToCheckout() {
   await guardHuman();
   // Let the checkout page render its summary (order total) before reading it.
   await waitForAny({ total: "text=Order total", place: 'input[name="placeYourOrder1"], #submitOrderButtonId, #placeOrder' }, 8_000);
+  // Deliver (and bill) to the demo address before the total is read — tax depends on it.
+  const match = shipToMatch();
+  if (match) {
+    const addr = await ensureCheckoutAddress(match);
+    if (!addr.ok) return { ok: false, error: addr.error, cart_items: cart.items };
+    await waitForAny({ total: "text=Order total" }, 5_000);
+  }
   // Skip Prime / interstitial upsells.
   await clickSel("#prime-interstitial-nothanks-button, #prime-declineCTA").catch(() => false);
   const summary = await checkoutSummary();
