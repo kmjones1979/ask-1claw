@@ -38,23 +38,47 @@ export async function launchBridgeSession(opts: { headless?: boolean } = {}): Pr
     ],
   });
   const browser = await puppeteer.connect({ browserWSEndpoint: bridge.url, defaultViewport: null });
+  const { page, cdp } = await openTab(browser);
+  return { bridge, browser, page, cdp };
+}
+
+async function openTab(browser: Browser) {
   const page = await browser.newPage();
   const cdp = await page.createCDPSession();
   await cdp
     .send("Emulation.setDeviceMetricsOverride", { ...VIEWPORT, deviceScaleFactor: 1, mobile: false })
     .catch(() => {});
-  return { bridge, browser, page, cdp };
+  return { page, cdp };
 }
 
-export function getBrowser(): Promise<Session> {
-  return (g.__bridge ??= (async () => {
-    const s = await launchBridgeSession();
-    await restoreCookies(s.cdp);
-    return s;
+/**
+ * Returns a live session, healing it if needed: if the agent's tab was closed
+ * (window closed by hand, or a checkout flow replaced it) a fresh tab is opened in
+ * the same browser context (so the Amazon cookies carry over); if Chromium itself
+ * is gone, the bridge is relaunched.
+ */
+export async function getBrowser(): Promise<Session> {
+  let s = await (g.__bridge ??= (async () => {
+    const fresh = await launchBridgeSession();
+    await restoreCookies(fresh.cdp);
+    return fresh;
   })().catch((err) => {
     g.__bridge = undefined;
     throw err;
   }));
+
+  if (!s.browser.connected) {
+    console.warn("[browser] Chromium disconnected — relaunching");
+    await s.bridge.close().catch(() => {});
+    g.__bridge = undefined;
+    return getBrowser();
+  }
+  if (s.page.isClosed()) {
+    console.warn("[browser] agent tab was closed — opening a new one");
+    const tab = await openTab(s.browser);
+    s = Object.assign(s, tab);
+  }
+  return s;
 }
 
 async function restoreCookies(cdp: CDPSession) {
@@ -80,16 +104,42 @@ async function restoreCookies(cdp: CDPSession) {
   return n;
 }
 
-async function settle(page: Page, ms = 1200) {
-  await page
-    .waitForFunction(() => document.readyState === "complete", { timeout: 15_000 })
-    .catch(() => {});
+async function settle(page: Page, ms = 400) {
+  // Poll rather than waitForFunction: it relies on events the bridge doesn't forward.
+  const deadline = Date.now() + 6_000;
+  while (Date.now() < deadline) {
+    const done = await page.evaluate(() => document.readyState === "complete").catch(() => false);
+    if (done) break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
   await new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Navigate without waiting on Puppeteer's lifecycle events, which don't arrive
+ * through the bridge proxy (page.goto would always sit out its full timeout).
+ * Sends Page.navigate directly, then polls until the old document is gone and
+ * the new one has parsed.
+ */
+export async function fastGoto(url: string, timeoutMs = 20_000) {
+  const { page, cdp } = await getBrowser();
+  await page.evaluate(() => ((window as unknown as { __agentOld?: boolean }).__agentOld = true)).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ready = await page
+      .evaluate(
+        () => !(window as unknown as { __agentOld?: boolean }).__agentOld && document.readyState !== "loading",
+      )
+      .catch(() => false);
+    if (ready) break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return page;
+}
+
 export async function navigate(url: string) {
-  const { page } = await getBrowser();
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
+  const page = await fastGoto(url);
   await settle(page);
   return snapshot();
 }
@@ -110,7 +160,7 @@ export async function snapshot() {
     for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
       const r = el.getBoundingClientRect();
       if (r.width < 4 || r.height < 4) continue;
-      if (r.bottom < 0 || r.top > window.innerHeight * 2.5) continue;
+      if (r.bottom < 0 || r.top > window.innerHeight * 1.5) continue;
       const st = getComputedStyle(el);
       if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity) === 0) continue;
       el.setAttribute("data-agent-idx", String(i));
@@ -127,9 +177,9 @@ export async function snapshot() {
           ? ` src=${(el as HTMLIFrameElement).src.slice(0, 80)} at(${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)}x${Math.round(r.height)})`
           : "";
       out.push(`[${i}] ${type} "${label.slice(0, 90)}"${extra}${r.top > window.innerHeight ? " (below fold)" : ""}`);
-      if (++i >= 160) break;
+      if (++i >= 90) break;
     }
-    const text = document.body.innerText.replace(/\n{3,}/g, "\n\n").slice(0, 7000);
+    const text = document.body.innerText.replace(/\n{3,}/g, "\n\n").slice(0, 3500);
     return { url: location.href, title: document.title, elements: out.join("\n"), text };
   });
   return data;
@@ -162,14 +212,14 @@ export async function click(target: { index?: number; x?: number; y?: number }) 
   if (typeof target.index === "number") {
     pt = await centerOf(target.index);
     if (!pt) return { ok: false, error: `No element [${target.index}] — take a new snapshot.` };
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 120));
   } else if (typeof target.x === "number" && typeof target.y === "number") {
     pt = { x: target.x, y: target.y };
   } else {
     return { ok: false, error: "Provide index or x/y." };
   }
   await page.mouse.click(pt.x, pt.y, { delay: 40 });
-  await settle(page, 1500);
+  await settle(page, 600);
   return { ok: true, url: page.url() };
 }
 
@@ -188,7 +238,7 @@ export async function typeText(text: string, opts: { index?: number; x?: number;
   await page.keyboard.type(text, { delay: 25 });
   if (opts.submit) {
     await page.keyboard.press("Enter");
-    await settle(page, 1500);
+    await settle(page, 600);
   }
   return { ok: true, url: page.url() };
 }
@@ -216,7 +266,7 @@ export async function selectOption(index: number, option: string) {
 export async function pressKey(key: string) {
   const { page } = await getBrowser();
   await page.keyboard.press(key as never);
-  await settle(page, 800);
+  await settle(page, 300);
   return { ok: true };
 }
 

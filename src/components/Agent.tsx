@@ -19,6 +19,11 @@ export default function Agent() {
   });
   const busy = status === "submitted" || status === "streaming";
 
+  // Launch the agent's browser (signed in to Amazon) as soon as the page opens.
+  useEffect(() => {
+    void fetch("/api/warmup", { method: "POST" }).catch(() => {});
+  }, []);
+
   // Speak each text part once it has finished streaming, so the agent narrates
   // progress ("checking my wallet…") during long multi-step purchases.
   useEffect(() => {
@@ -349,6 +354,11 @@ const TOOL_LABELS: Record<string, string> = {
   issue_card: "Buying a card from Laso with USDC",
   wait_for_card: "Waiting for the card",
   fill_payment_card: "Entering card securely",
+  amazon_search: "Searching Amazon",
+  amazon_add_to_cart: "Adding to cart",
+  amazon_checkout: "Going to checkout",
+  amazon_checkout_summary: "Reviewing the order",
+  amazon_place_order: "Placing the order",
   browser_navigate: "Browsing Amazon",
   browser_snapshot: "Reading the page",
   browser_screenshot: "Looking at the page",

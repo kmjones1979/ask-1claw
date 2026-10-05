@@ -1,6 +1,7 @@
 import "server-only";
 import { tool } from "ai";
 import { z } from "zod";
+import * as amazon from "./amazon";
 import * as browser from "./browser";
 import * as oneclaw from "./oneclaw";
 
@@ -25,11 +26,24 @@ const asImage = (output: { image: string; note?: string }) => ({
   ],
 });
 
-async function safe<T>(fn: () => Promise<T>) {
+/** Runs a tool with a hard timeout so a stuck page can never hang the agent, and logs timing. */
+async function safe<T>(fn: () => Promise<T>, name = "tool", timeoutMs = 60_000) {
+  const started = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await fn();
+    return await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${name} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+      }),
+    ]);
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[tool] ${name} failed: ${error}`);
+    return { ok: false, error };
+  } finally {
+    clearTimeout(timer);
+    console.log(`[tool] ${name} ${Date.now() - started}ms`);
   }
 }
 
@@ -38,7 +52,7 @@ export const tools = {
   get_wallet_balance: tool({
     description: "Get the agent's USDC balance on Base from its 1Claw wallet.",
     inputSchema: z.object({}),
-    execute: () => safe(() => oneclaw.getUsdcBalance()),
+    execute: () => safe(() => oneclaw.getUsdcBalance(), "get_wallet_balance"),
   }),
 
   issue_card: tool({
@@ -55,14 +69,14 @@ export const tools = {
           return { ok: false, error: `Amount exceeds the $${MAX_CARD_USD} demo limit.` };
         }
         return oneclaw.orderCard(Number(amount_usd).toFixed(2));
-      }),
+      }, "issue_card"),
   }),
 
   wait_for_card: tool({
     description:
       "Wait until an ordered card is approved and ready to use (polls up to ~4 minutes). Returns masked card status.",
     inputSchema: z.object({ card_id: z.string() }),
-    execute: ({ card_id }) => safe(() => oneclaw.waitForCard(card_id)),
+    execute: ({ card_id }) => safe(() => oneclaw.waitForCard(card_id), "wait_for_card", 300_000),
   }),
 
   fill_payment_card: tool({
@@ -102,20 +116,52 @@ export const tools = {
           fields.map((f) => ({ value: values[f.field], index: f.index, x: f.x, y: f.y, isSelect: f.is_select })),
         );
         return { ...r, filled: fields.map((f) => f.field), card_last4: card.pan?.slice(-4) };
-      }),
+      }, "fill_payment_card"),
+  }),
+
+  // ── Amazon fast path (one call per checkout stage) ──────────────────────
+  amazon_search: tool({
+    description: "Search Amazon. Returns the top non-sponsored results (asin, title, price, rating) and who is signed in.",
+    inputSchema: z.object({ query: z.string() }),
+    execute: ({ query }) => safe(() => amazon.search(query), "amazon_search"),
+  }),
+
+  amazon_add_to_cart: tool({
+    description: "Open a product by ASIN and add it to the cart (declines protection-plan upsells).",
+    inputSchema: z.object({ asin: z.string() }),
+    execute: ({ asin }) => safe(() => amazon.addToCart(asin), "amazon_add_to_cart"),
+  }),
+
+  amazon_checkout: tool({
+    description:
+      "Go from the cart to the checkout page. Returns cart items, shipping address, current payment method, order total and delivery estimate.",
+    inputSchema: z.object({}),
+    execute: () => safe(() => amazon.goToCheckout(), "amazon_checkout"),
+  }),
+
+  amazon_checkout_summary: tool({
+    description: "Re-read the checkout page summary (address, payment, total, delivery) after changing something.",
+    inputSchema: z.object({}),
+    execute: () => safe(() => amazon.checkoutSummary(), "amazon_checkout_summary"),
+  }),
+
+  amazon_place_order: tool({
+    description: "Click 'Place your order' and return the confirmation (delivery estimate, order number).",
+    inputSchema: z.object({}),
+    execute: () => safe(() => amazon.placeOrder(), "amazon_place_order"),
   }),
 
   // ── Browser (via 1Claw browser-bridge) ───────────────────────────────────
   browser_navigate: tool({
     description: "Open a URL in the agent's browser. Returns a page snapshot (indexed elements + text).",
     inputSchema: z.object({ url: z.string() }),
-    execute: ({ url }) => safe(() => browser.navigate(url)),
+    execute: ({ url }) => safe(() => browser.navigate(url), "browser_navigate"),
   }),
 
   browser_snapshot: tool({
     description: "Re-read the current page: URL, title, indexed interactive elements, and visible text.",
     inputSchema: z.object({}),
-    execute: () => safe(() => browser.snapshot()),
+    execute: () => safe(() => browser.snapshot(), "browser_snapshot"),
   }),
 
   browser_screenshot: tool({
@@ -129,7 +175,7 @@ export const tools = {
   browser_click: tool({
     description: "Click an element by snapshot index, or at x/y viewport coordinates.",
     inputSchema: z.object(locator),
-    execute: (input) => safe(() => browser.click(input)),
+    execute: (input) => safe(() => browser.click(input), "browser_click"),
   }),
 
   browser_type: tool({
@@ -139,24 +185,24 @@ export const tools = {
       submit: z.boolean().optional(),
       ...locator,
     }),
-    execute: ({ text, ...opts }) => safe(() => browser.typeText(text, opts)),
+    execute: ({ text, ...opts }) => safe(() => browser.typeText(text, opts), "browser_type"),
   }),
 
   browser_select: tool({
     description: "Choose an option in a <select> dropdown by snapshot index.",
     inputSchema: z.object({ index: z.number().int(), option: z.string() }),
-    execute: ({ index, option }) => safe(() => browser.selectOption(index, option)),
+    execute: ({ index, option }) => safe(() => browser.selectOption(index, option), "browser_select"),
   }),
 
   browser_press_key: tool({
     description: 'Press a keyboard key, e.g. "Enter", "Tab", "Escape".',
     inputSchema: z.object({ key: z.string() }),
-    execute: ({ key }) => safe(() => browser.pressKey(key)),
+    execute: ({ key }) => safe(() => browser.pressKey(key), "browser_press_key"),
   }),
 
   browser_scroll: tool({
     description: "Scroll the page vertically by a number of pixels (negative scrolls up).",
     inputSchema: z.object({ dy: z.number() }),
-    execute: ({ dy }) => safe(() => browser.scroll(dy)),
+    execute: ({ dy }) => safe(() => browser.scroll(dy), "browser_scroll"),
   }),
 };

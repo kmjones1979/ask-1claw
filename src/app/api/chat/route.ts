@@ -22,6 +22,8 @@ export async function POST(req: Request) {
     messages: await convertToModelMessages(messages),
     tools,
     stopWhen: isStepCount(80),
+    // No extended thinking: each browser step is simple, and latency matters on stage.
+    providerOptions: { anthropic: { thinking: { type: "disabled" } } },
   });
 
   return createUIMessageStreamResponse({
