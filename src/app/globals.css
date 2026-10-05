@@ -1,26 +1,39 @@
 @import "tailwindcss";
 
+/* 1Claw brand palette (brand kit v2). Dark theme only — this is a stage display. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #030304;
+  --foreground: #ffffff;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+
+  --color-claw-red: #df171a;
+  --color-claw-red-deep: #b80030;
+  --color-claw-red-low: #990029;
+  --color-claw-red-soft: #f0656a;
+  --color-claw-black: #050505;
+  --color-claw-card: #0c0b0e;
+  --color-claw-card-2: #100e11;
+  --color-claw-border: #1e1c1d;
+  --color-claw-hair: #26232a;
+  --color-claw-muted: #8b8a93;
+  --color-claw-muted-2: #67666e;
+  --color-claw-ok: #5fd98a;
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Signature gradient */
+.bg-claw-gradient {
+  background-image: linear-gradient(135deg, #df171a 0%, #c4123a 45%, #990029 100%);
 }

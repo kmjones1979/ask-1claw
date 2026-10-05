@@ -85,26 +85,26 @@ export default function Agent() {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
 
   return (
-    <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-[#07080c] text-zinc-100">
+    <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-background text-white">
       <header className="z-20 flex items-center justify-between px-5 py-4">
-        <div className="flex items-center gap-2 text-sm font-medium tracking-wide text-zinc-300">
-          <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px] shadow-emerald-400" />
+        <div className="flex items-center gap-2 text-sm font-medium tracking-wide text-white/80">
+          <span className="inline-block h-2 w-2 rounded-full bg-claw-red shadow-[0_0_10px] shadow-claw-red" />
           Ask Clyde
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setVoiceOn((v) => !v)}
-            className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/5"
+            className="rounded-full border border-claw-border px-3 py-1.5 text-xs text-white/80 hover:bg-claw-card-2"
           >
             {voiceOn ? "🔊 Voice on" : "🔇 Voice off"}
           </button>
-          <div className="flex rounded-full border border-white/10 p-0.5 text-xs">
+          <div className="flex rounded-full border border-claw-border p-0.5 text-xs">
             {(["portrait", "chat"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
                 className={`rounded-full px-3 py-1 capitalize ${
-                  mode === m ? "bg-white text-black" : "text-zinc-400 hover:text-white"
+                  mode === m ? "bg-claw-red text-white" : "text-claw-muted hover:text-white"
                 }`}
               >
                 {m}
@@ -153,7 +153,7 @@ export default function Agent() {
           mode === "chat" ? "hidden lg:flex" : "flex"
         }`}
       >
-        <span className="text-[11px] uppercase tracking-[0.18em] text-zinc-400">Powered by</span>
+        <span className="text-[11px] uppercase tracking-[0.18em] text-claw-muted">Powered by</span>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/1claw-logo.svg" alt="1Claw" className="h-6 w-auto" />
       </a>
@@ -190,20 +190,20 @@ function Portrait(props: {
   const scale = 1 + level * 0.25;
   const ring =
     state === "listening"
-      ? "shadow-rose-500/60"
+      ? "shadow-claw-red/60"
       : state === "working"
-        ? "shadow-sky-500/50"
+        ? "shadow-claw-red-deep/50"
         : state === "speaking"
-          ? "shadow-emerald-400/60"
-          : "shadow-indigo-500/30";
+          ? "shadow-claw-red/80"
+          : "shadow-claw-red-low/30";
 
   return (
     <main className="relative flex flex-1 flex-col items-center justify-center gap-8 px-4 pb-10">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.18),transparent_60%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(223,23,26,0.14),transparent_60%)]" />
 
       <div className="relative">
         <div
-          className={`relative aspect-[3/4] h-[52dvh] max-h-[640px] overflow-hidden rounded-[2.5rem] border border-white/10 shadow-[0_0_120px] transition-shadow duration-500 ${ring} ${
+          className={`relative aspect-[3/4] h-[52dvh] max-h-[640px] overflow-hidden rounded-[2.5rem] border border-claw-border shadow-[0_0_120px] transition-shadow duration-500 ${ring} ${
             state === "working" ? "animate-pulse" : ""
           }`}
           style={{ transform: `scale(${scale})`, transition: "transform 80ms linear" }}
@@ -213,13 +213,13 @@ function Portrait(props: {
             // eslint-disable-next-line @next/next/no-img-element
             <img src="/agent.png" alt="Agent" className="h-full w-full object-cover" />
           )}
-          <div className="absolute inset-0 -z-10 bg-gradient-to-b from-indigo-500/40 via-fuchsia-500/20 to-black" />
+          <div className="absolute inset-0 -z-10 bg-gradient-to-b from-claw-red/35 via-claw-red-low/20 to-claw-black" />
           <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent" />
         </div>
       </div>
 
       <div className="z-10 flex min-h-[7rem] max-w-3xl flex-col items-center gap-3 text-center">
-        {heard && <p className="text-sm text-zinc-500">“{heard}”</p>}
+        {heard && <p className="text-sm text-claw-muted-2">“{heard}”</p>}
         {steps.length > 0 && state !== "idle" && (
           <ul className="flex flex-wrap justify-center gap-2">
             {steps.map((s, i) => (
@@ -227,10 +227,10 @@ function Portrait(props: {
                 key={i}
                 className={`rounded-full border px-3 py-1 text-xs ${
                   s.status === "done"
-                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    ? "border-claw-ok/30 bg-claw-ok/10 text-claw-ok"
                     : s.status === "error"
-                      ? "border-rose-500/30 bg-rose-500/10 text-rose-300"
-                      : "border-sky-500/30 bg-sky-500/10 text-sky-300"
+                      ? "border-claw-red-soft/30 bg-claw-red-soft/10 text-claw-red-soft"
+                      : "border-claw-red/40 bg-claw-red/10 text-white"
                 }`}
               >
                 {s.status === "running" ? "⏳ " : s.status === "done" ? "✓ " : "✕ "}
@@ -239,10 +239,10 @@ function Portrait(props: {
             ))}
           </ul>
         )}
-        <p className="line-clamp-4 text-xl leading-relaxed text-zinc-100 md:text-2xl">
+        <p className="line-clamp-4 text-xl leading-relaxed text-white md:text-2xl">
           {state === "speaking" || state === "idle" ? caption : STATE_LABEL[state]}
         </p>
-        {state === "idle" && !caption && <p className="text-sm text-zinc-500">{STATE_LABEL.idle}</p>}
+        {state === "idle" && !caption && <p className="text-sm text-claw-muted-2">{STATE_LABEL.idle}</p>}
       </div>
 
       <MicButton state={state} onClick={onMic} big />
@@ -270,7 +270,7 @@ function Chat(props: {
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden px-4">
       <div className="flex-1 space-y-4 overflow-y-auto py-4">
         {messages.length === 0 && (
-          <p className="mt-20 text-center text-zinc-500">
+          <p className="mt-20 text-center text-claw-muted-2">
             Ask me anything — I can pay for things onchain with 1Claw.
           </p>
         )}
@@ -278,7 +278,7 @@ function Chat(props: {
           <div key={m.id} className={m.role === "user" ? "flex justify-end" : ""}>
             <div
               className={`max-w-[85%] space-y-2 rounded-2xl px-4 py-3 ${
-                m.role === "user" ? "bg-indigo-600 text-white" : "bg-white/5"
+                m.role === "user" ? "bg-claw-gradient text-white" : "border border-claw-border bg-claw-card"
               }`}
             >
               {m.parts.map((p, i) =>
@@ -290,7 +290,7 @@ function Chat(props: {
               )}
               {m.role === "assistant" &&
                 toolSteps(m).map((s, i) => (
-                  <div key={`t${i}`} className="font-mono text-xs text-zinc-400">
+                  <div key={`t${i}`} className="font-mono text-xs text-claw-muted">
                     {s.status === "running" ? "⏳" : s.status === "done" ? "✓" : "✕"} {s.label}
                   </div>
                 ))}
@@ -311,14 +311,14 @@ function Chat(props: {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Type a message…"
-          className="flex-1 rounded-full border border-white/10 bg-white/5 px-5 py-3 outline-none focus:border-indigo-400"
+          className="flex-1 rounded-full border border-claw-border bg-claw-card px-5 py-3 outline-none focus:border-claw-red"
         />
         {busy ? (
-          <button type="button" onClick={onStop} className="rounded-full bg-white/10 px-5 py-3">
+          <button type="button" onClick={onStop} className="rounded-full border border-claw-border bg-claw-card-2 px-5 py-3">
             Stop
           </button>
         ) : (
-          <button className="rounded-full bg-white px-5 py-3 font-medium text-black">Send</button>
+          <button className="rounded-full bg-claw-gradient px-5 py-3 font-medium text-white">Send</button>
         )}
       </form>
     </main>
@@ -334,7 +334,7 @@ function MicButton({ state, onClick, big }: { state: AgentState; onClick: () => 
       aria-label={active ? "Stop recording" : "Start recording"}
       className={`z-10 flex shrink-0 items-center justify-center rounded-full transition ${
         big ? "h-20 w-20 text-3xl" : "h-12 w-12 text-xl"
-      } ${active ? "animate-pulse bg-rose-500 shadow-[0_0_40px] shadow-rose-500/60" : "bg-white/10 hover:bg-white/20"}`}
+      } ${active ? "animate-pulse bg-claw-red shadow-[0_0_40px] shadow-claw-red/60" : "border border-claw-border bg-claw-card-2 hover:border-claw-red/60"}`}
     >
       {active ? "■" : "🎙"}
     </button>
