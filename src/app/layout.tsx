@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Ask 1Claw",
+  title: "Ask Clyde",
   description: "Voice agent that pays onchain with 1Claw",
 };
 

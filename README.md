@@ -1,4 +1,4 @@
-# Ask 1Claw
+# Ask Clyde
 
 Voice agent for a live demo: speak to it, it answers with ElevenLabs, and it pays for things
 onchain through 1Claw — USDC on Base → prepaid Laso card → Amazon checkout via 1Claw browser-bridge.
