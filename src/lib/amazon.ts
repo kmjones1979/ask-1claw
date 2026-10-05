@@ -214,6 +214,11 @@ export async function addCard(card: CardDetails, opts: { submit?: boolean } = {}
   const p = await goto(`${AMZ}/cpe/yourpayments/wallet`);
   const steps: string[] = [];
   if (!(await waitForAny({ add: "text=Add a payment method" }, 12_000))) return { ok: false, error: "Wallet page didn't load." };
+  // Already saved (e.g. a reused card)? Nothing to add.
+  const alreadySaved = await p
+    .evaluate((l4) => new RegExp(`ending in\\s*(?:•+\\s*)?${l4}\\b`).test(document.body.innerText), card.pan.slice(-4))
+    .catch(() => false);
+  if (alreadySaved && opts.submit !== false) return { ok: true, steps: ["card already saved on Amazon"], last4: card.pan.slice(-4) };
   // Billing address = the shipping address. Amazon's header shows where orders ship ("Deliver to … City 12345");
   // we match that ZIP when Amazon asks which saved address to bill.
   const shipZip =

@@ -13,6 +13,8 @@ export type FullCard = { pan: string; exp_month: number; exp_year: number; cvv?:
 
 export async function order(amountUsd: number) {
   if (provider() === "oneclaw") return { ...(await oneclaw.orderCard(amountUsd.toFixed(2))), amount_usd: amountUsd.toFixed(2) };
+  const reusable = await laso.findReusableCard(amountUsd);
+  if (reusable) return { ...reusable, amount_usd: amountUsd.toFixed(2), note: "Reusing an unspent Laso card that covers the total." };
   return laso.orderCard(amountUsd);
 }
 

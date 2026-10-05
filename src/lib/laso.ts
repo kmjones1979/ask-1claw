@@ -134,6 +134,24 @@ async function getCardData(cardId: string) {
   return body;
 }
 
+/**
+ * An already-issued Laso card with enough balance for `amountUsd`, if any — so a
+ * failed or abandoned run doesn't strand money on a card we then never use.
+ */
+export async function findReusableCard(amountUsd: number) {
+  const s = session();
+  if (!s?.id_token) return null;
+  const recent = Object.entries(s.cards).sort((a, b) => b[1].at - a[1].at).slice(0, 5);
+  for (const [cardId] of recent) {
+    const d = await getCardData(cardId).catch(() => null);
+    const bal = Number(d?.card_details?.available_balance ?? NaN);
+    if (d?.status === "ready" && d.card_details?.card_number && bal + 0.005 >= amountUsd) {
+      return { card_id: cardId, status: "ready", reused: true, balance: bal, last4: d.card_details.card_number.slice(-4) };
+    }
+  }
+  return null;
+}
+
 /** Polls until the card is ready (Laso: typically 7–10s). Returns masked status only. */
 export async function waitForCard(cardId: string, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
