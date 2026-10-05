@@ -232,6 +232,35 @@ async function centerOf(index: number) {
   }, index);
 }
 
+/**
+ * Purchase buttons may only be pressed by amazon_place_order, which first checks
+ * the payment card and total. Generic clicks/keys that would buy are refused.
+ */
+const PURCHASE_LABEL = /place (your )?order|buy now|submit order|complete purchase|pay now|confirm purchase/i;
+
+async function wouldPurchase(page: Page, pt: { x: number; y: number }) {
+  return page
+    .evaluate(
+      (x, y, re) => {
+        let el = document.elementFromPoint(x, y) as HTMLElement | null;
+        for (let i = 0; el && i < 6; i++, el = el.parentElement) {
+          const label = `${el.innerText ?? ""} ${(el as HTMLInputElement).value ?? ""} ${el.getAttribute("aria-label") ?? ""} ${el.getAttribute("name") ?? ""} ${el.id}`;
+          if (label.length < 200 && new RegExp(re, "i").test(label)) return true;
+          if (/placeYourOrder|submitOrderButton|buy-now-button|turbo-checkout/i.test(`${el.id} ${el.getAttribute("name") ?? ""}`)) return true;
+        }
+        return false;
+      },
+      pt.x,
+      pt.y,
+      PURCHASE_LABEL.source,
+    )
+    .catch(() => false);
+}
+
+async function onCheckoutReview(page: Page) {
+  return /\/checkout\/|\/gp\/buy\//.test(page.url()) && !page.url().includes("/thankyou");
+}
+
 export async function click(target: { index?: number; x?: number; y?: number }) {
   const { page } = await getBrowser();
   let pt: { x: number; y: number } | null = null;
@@ -243,6 +272,9 @@ export async function click(target: { index?: number; x?: number; y?: number }) 
     pt = { x: target.x, y: target.y };
   } else {
     return { ok: false, error: "Provide index or x/y." };
+  }
+  if (await wouldPurchase(page, pt)) {
+    return { ok: false, error: "Refused: that button places an order. Only amazon_place_order may do that (it verifies the card first)." };
   }
   await page.mouse.click(pt.x, pt.y, { delay: 40 });
   await settle(page, 600);
@@ -262,6 +294,9 @@ export async function typeText(text: string, opts: { index?: number; x?: number;
     await page.keyboard.press("Backspace");
   }
   await page.keyboard.type(text, { delay: 25 });
+  if (opts.submit && (await onCheckoutReview(page))) {
+    return { ok: false, error: "Refused: submitting on checkout could place the order. Use amazon_place_order." };
+  }
   if (opts.submit) {
     await page.keyboard.press("Enter");
     await settle(page, 600);
@@ -291,6 +326,9 @@ export async function selectOption(index: number, option: string) {
 
 export async function pressKey(key: string) {
   const { page } = await getBrowser();
+  if (/^(Enter|NumpadEnter| )$/.test(key) && (await onCheckoutReview(page))) {
+    return { ok: false, error: "Refused: pressing Enter on checkout could place the order. Use amazon_place_order." };
+  }
   await page.keyboard.press(key as never);
   await settle(page, 300);
   return { ok: true };

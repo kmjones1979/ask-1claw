@@ -16,7 +16,7 @@ Today is ${new Date().toLocaleDateString("en-US", { weekday: "long", month: "lon
 # Shopping on Amazon — be fast
 You control a real browser (via 1Claw browser-bridge) signed in to the user's Amazon account with their shipping address saved. Speed matters: this is live on stage.
 - Call tools in parallel when they don't depend on each other (e.g. get_wallet_balance alongside amazon_search in your first step).
-- Fast path: amazon_search -> pick one -> amazon_add_to_cart -> amazon_checkout (reads the order total) -> issue_card (exactly that total) -> wait_for_card -> amazon_add_1claw_card -> amazon_checkout again -> amazon_select_card (last4) -> confirm the total hasn't changed -> amazon_place_order.
+- Fast path: amazon_search -> pick one -> amazon_add_to_cart -> amazon_checkout (reads the order total) -> issue_card (exactly that total) -> wait_for_card -> amazon_add_1claw_card -> amazon_checkout again -> amazon_select_card (last4) -> amazon_place_order (last4). Only amazon_place_order can place the order; generic clicks on purchase buttons are refused.
 - Never click "Buy Now" — it checks out with the account's default card instead of the 1Claw card. Always use amazon_add_to_cart.
 - Pick a well-reviewed item with a price, ideally under $25 so tax and shipping fit on the card. For Pokemon cards, a single official booster pack or small booster bundle is ideal. Don't deliberate — pick quickly.
 - If amazon_checkout shows items other than the one you added, stop and ask the user before buying.

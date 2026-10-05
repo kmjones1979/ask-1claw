@@ -182,9 +182,23 @@ export const tools = {
   }),
 
   amazon_place_order: tool({
-    description: "Click 'Place your order' and return the confirmation (delivery estimate, order number).",
-    inputSchema: z.object({}),
-    execute: () => safe(() => amazon.placeOrder(), "amazon_place_order"),
+    description:
+      "Click 'Place your order' and return the confirmation (delivery estimate, order number). " +
+      "Refuses unless checkout shows the card ending in last4 and the total equals the card amount.",
+    inputSchema: z.object({ last4: z.string().length(4).describe("Last 4 of the 1Claw/Laso card selected for this order") }),
+    execute: ({ last4 }) =>
+      safe(async () => {
+        const summary = await amazon.checkoutSummary();
+        const paying = `${summary.payment ?? ""}`;
+        if (!new RegExp(`\\b${last4}\\b`).test(paying)) {
+          return { ok: false, error: `Refused: checkout is paying with "${paying || "unknown"}", not the card ending in ${last4}. Run amazon_select_card first.` };
+        }
+        const cardTotal = amazon.lastCheckoutTotal();
+        if (cardTotal && summary.order_total_usd && Math.abs(summary.order_total_usd - cardTotal) > 0.005) {
+          return { ok: false, error: `Refused: order total $${summary.order_total_usd} differs from the card amount $${cardTotal}.` };
+        }
+        return amazon.placeOrder();
+      }, "amazon_place_order"),
   }),
 
   // ── Browser (via 1Claw browser-bridge) ───────────────────────────────────

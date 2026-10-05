@@ -315,54 +315,70 @@ export async function addCard(card: CardDetails, opts: { submit?: boolean } = {}
 }
 
 /**
- * On the checkout page, select the card ending in last4 as the payment method.
- * The payment selector may be in the main page or in an apx iframe.
+ * On Amazon's checkout, select the card ending in last4 and confirm it.
+ * The payment step (/checkout/p/…/pay) lists saved cards as radio rows
+ * (name="ppw-instrumentRowSelection") with a "Use this payment method" button.
  */
 export async function selectCardAtCheckout(last4: string) {
   const p = await page();
   await guardHuman();
-  // Open the payment chooser if it's collapsed.
-  (await clickText("Change payment method")) || (await clickText("Change")) ;
-  await new Promise((r) => setTimeout(r, 1500));
 
-  const pattern = `ending in`;
-  const inMain = await p.evaluate(
-    (l4, pat) => {
-      const el = Array.from(document.querySelectorAll<HTMLElement>("label, [role=radio], .pmts-instrument-selector, li, div"))
-        .filter((e) => e.children.length < 12 && e.getBoundingClientRect().width > 0)
-        .find((e) => e.innerText?.includes(pat) && e.innerText.includes(l4));
-      if (!el) return false;
-      el.setAttribute("data-agent-target", "1");
-      return true;
-    },
-    last4,
-    pattern,
-  );
-  if (inMain) {
-    await clickSel('[data-agent-target="1"]');
-  } else {
-    const f = await apxFrame(5_000);
-    if (!f) return { ok: false, error: `Couldn't find the card ending in ${last4} on the checkout page.` };
-    const found = await f.evaluate(
-      (l4) => {
-        const el = Array.from(document.querySelectorAll<HTMLElement>("label, [role=radio], [role=button], li, div"))
-          .filter((e) => e.children.length < 12 && e.getBoundingClientRect().width > 0)
-          .find((e) => e.innerText?.includes(l4));
-        if (!el) return false;
-        el.setAttribute("data-agent-target", "1");
-        return true;
-      },
-      last4,
-    );
-    if (!found) return { ok: false, error: `Couldn't find the card ending in ${last4} in the payment selector.` };
-    await frameClick(f, '[data-agent-target="1"]');
-    await new Promise((r) => setTimeout(r, 800));
-    await frameClickText(f, "Use this payment method");
+  // From the review page, open the payment step via its own "Change" link (not the address one).
+  if (!p.url().includes("/pay")) {
+    const opened = await p.evaluate(() => {
+      const link = Array.from(document.querySelectorAll<HTMLElement>("a, button, [role=button]")).find((e) => {
+        const label = `${e.getAttribute("aria-label") ?? ""} ${e.innerText ?? ""}`.toLowerCase();
+        return e.getBoundingClientRect().width > 0 && label.includes("change") && label.includes("payment");
+      });
+      link?.setAttribute("data-agent-target", "1");
+      return Boolean(link);
+    });
+    if (opened) {
+      await clickSel('[data-agent-target="1"]');
+      await waitForAny({ pay: "url=/pay", radios: 'input[name="ppw-instrumentRowSelection"]' }, 10_000);
+    }
   }
-  await new Promise((r) => setTimeout(r, 800));
-  (await clickText("Use this payment method")) || (await clickText("Continue"));
-  await new Promise((r) => setTimeout(r, 2000));
-  return { ok: true, ...(await checkoutSummary()) };
+  if (!(await waitForAny({ radios: 'input[name="ppw-instrumentRowSelection"]' }, 8_000))) {
+    return { ok: false, error: "Couldn't find Amazon's card list on the payment step." };
+  }
+
+  // Mark the radio for the card ending in last4.
+  const found = await p.evaluate((l4) => {
+    for (const r of Array.from(document.querySelectorAll<HTMLInputElement>('input[name="ppw-instrumentRowSelection"]'))) {
+      let row: HTMLElement | null = r.parentElement;
+      // Walk up to the row that names the card ("… ending in 1234").
+      while (row && !/ending in/i.test(row.innerText ?? "") && row !== document.body) row = row.parentElement;
+      if (row && new RegExp(`ending in\\s*${l4}\\b`).test(row.innerText)) {
+        r.setAttribute("data-agent-target", "1");
+        return { checked: r.checked };
+      }
+    }
+    return null;
+  }, last4);
+  if (!found) return { ok: false, error: `The card ending in ${last4} isn't in Amazon's saved cards. Add it first with amazon_add_1claw_card.` };
+  if (!found.checked) {
+    await clickSel('[data-agent-target="1"]');
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  await p.evaluate(() => document.querySelectorAll("[data-agent-target]").forEach((e) => e.removeAttribute("data-agent-target")));
+
+  // Confirm, then wait to leave the payment step.
+  if (!(await clickText("Use this payment method"))) return { ok: false, error: "No 'Use this payment method' button." };
+  // Amazon shows "Setting your payment method…" before moving to the review (/spc) page.
+  const left = await waitForAny({ spc: "url=/spc" }, 15_000);
+  await waitForAny({ paying: "text=Paying with" }, 5_000);
+  await guardHuman();
+  const summary = await checkoutSummary();
+  const selected = await p.evaluate(
+    (l4) => new RegExp(`(ending in|Paying with[^\\n]{0,40}?)\\s*${l4}\\b`, "i").test(document.body.innerText),
+    last4,
+  );
+  return {
+    ok: Boolean(left) && selected,
+    selected_last4: selected ? last4 : null,
+    ...summary,
+    ...(selected ? {} : { error: `Amazon isn't showing the card ending in ${last4} as the payment method.` }),
+  };
 }
 
 /** Click by text, retrying until `next` shows up (pages often ignore clicks until their JS is ready). */
@@ -523,7 +539,11 @@ export async function checkoutSummary() {
       body.match(/Order total:?\s*\$[\d,.]+/i)?.[0];
     return {
       shipping_address: clean(document.querySelector("#deliver-to-address-text, .displayAddressDiv, #shipaddress")?.textContent).slice(0, 160),
-      payment: clean(document.querySelector("#payment-information, .pmts-instrument-display-name, #checkout-paymentInformationSection")?.textContent).slice(0, 160),
+      payment:
+        clean(document.querySelector("#payment-information, .pmts-instrument-display-name, #checkout-paymentInformationSection")?.textContent).slice(0, 160) ||
+        (body.match(/Paying with[^\n]{0,40}?\d{4}/i)?.[0] ??
+          body.match(/(Paying with|Payment method)[\s\S]{0,160}?ending in\s*\d{4}/i)?.[0] ??
+          "").replace(/\s+/g, " ").slice(-60),
       order_total: total,
       delivery: body.match(/(Arriving|Delivery|Get it)[^\n]{0,60}/i)?.[0],
     };
@@ -535,7 +555,18 @@ export async function checkoutSummary() {
 
 export async function placeOrder() {
   const p = await page();
-  const clicked = await clickSel('input[name="placeYourOrder1"], #submitOrderButtonId input, #placeOrder, #bottomSubmitOrderButtonId input');
+  // Never make this order's card/address the account default.
+  await p
+    .evaluate(() => {
+      for (const box of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))) {
+        const label = (box.closest("label")?.innerText ?? box.parentElement?.innerText ?? "").toLowerCase();
+        if (box.checked && /default to this|default payment/.test(label)) box.click();
+      }
+    })
+    .catch(() => {});
+  const clicked =
+    (await clickSel('input[name="placeYourOrder1"], #submitOrderButtonId input, #placeOrder, #bottomSubmitOrderButtonId input')) ||
+    (await clickText("Place your order"));
   if (!clicked) return { ok: false, error: "Couldn't find the Place your order button." };
   const result = await waitForAny(
     { done: "text=Order placed, thanks", done2: "text=Thank you, your order has been placed", problem: ".a-alert-error, #spc-error-message" },
