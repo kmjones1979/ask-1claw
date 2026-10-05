@@ -109,6 +109,7 @@ async function clickText(text: string) {
     const r = el.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   }, text);
+  console.log(`[amazon] clickText "${text}" ->`, pt);
   if (!pt) return false;
   await new Promise((r) => setTimeout(r, 150));
   await p.mouse.click(pt.x, pt.y, { delay: 30 });
@@ -329,10 +330,10 @@ export async function selectCardAtCheckout(last4: string) {
 }
 
 /** Click by text, retrying until `next` shows up (pages often ignore clicks until their JS is ready). */
-async function clickTextUntil(text: string, next: Record<string, string>, attempts = 4) {
+async function clickTextUntil(text: string, next: Record<string, string>, attempts = 3, waitMs = 7_000) {
   for (let i = 0; i < attempts; i++) {
     await clickText(text);
-    if (await waitForAny(next, 3_000)) return true;
+    if (await waitForAny(next, waitMs)) return true;
   }
   return false;
 }

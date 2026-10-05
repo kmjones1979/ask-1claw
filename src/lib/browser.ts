@@ -35,6 +35,11 @@ export async function launchBridgeSession(opts: { headless?: boolean } = {}): Pr
       ...(headless ? ["--headless=new"] : []),
       `--window-size=${VIEWPORT.width},${VIEWPORT.height + 120}`,
       "--disable-blink-features=AutomationControlled",
+      // Keep the agent's tab fully live when the window is behind others or
+      // minimised (macOS marks occluded windows hidden and stops routing input).
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--disable-background-timer-throttling",
     ],
   });
   const browser = await puppeteer.connect({ browserWSEndpoint: bridge.url, defaultViewport: null });
