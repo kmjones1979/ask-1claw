@@ -1,5 +1,5 @@
 import "server-only";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { MockVaultDriver, startBridge, type BridgeHandle } from "@1claw/browser-bridge";
 import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-core";
 
@@ -84,6 +84,27 @@ export async function getBrowser(): Promise<Session> {
     s = Object.assign(s, tab);
   }
   return s;
+}
+
+const AMAZON_COOKIE_URLS = ["https://www.amazon.com", "https://amazon.com", "https://www.amazon.com/gp/buy", "https://www.amazon.com/ap/"];
+let lastCookieSave = 0;
+
+/**
+ * Writes the browser's current Amazon cookies back to the session file, so a
+ * human-check clearance (and refreshed login cookies) survive browser restarts —
+ * the same way a normal browser remembers you. Throttled unless forced.
+ */
+export async function saveCookies(opts: { force?: boolean } = {}) {
+  if (!g.__bridge) return 0; // no browser running
+  if (!opts.force && Date.now() - lastCookieSave < 30_000) return 0;
+  const { cdp } = await getBrowser();
+  const { cookies } = (await cdp.send("Network.getCookies", { urls: AMAZON_COOKIE_URLS })) as { cookies: unknown[] };
+  if (!cookies?.length) return 0;
+  const tmp = `${SESSION_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(cookies, null, 2), { mode: 0o600 });
+  renameSync(tmp, SESSION_FILE);
+  lastCookieSave = Date.now();
+  return cookies.length;
 }
 
 async function restoreCookies(cdp: CDPSession) {

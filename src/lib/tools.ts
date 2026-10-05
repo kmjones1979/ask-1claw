@@ -44,6 +44,8 @@ async function safe<T>(fn: () => Promise<T>, name = "tool", timeoutMs = 60_000) 
     return { ok: false, error };
   } finally {
     clearTimeout(timer);
+    // Keep the saved Amazon session fresh (throttled) so clearances and logins persist.
+    if (name.startsWith("amazon_")) void browser.saveCookies().catch(() => {});
     console.log(`[tool] ${name} ${Date.now() - started}ms`);
   }
 }

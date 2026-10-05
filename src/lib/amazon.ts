@@ -1,5 +1,5 @@
 import "server-only";
-import { fastGoto, getBrowser } from "./browser";
+import { fastGoto, getBrowser, saveCookies } from "./browser";
 
 /**
  * Amazon-specific macros. Each one replaces a dozen generic snapshot/click round
@@ -39,7 +39,12 @@ async function guardHuman() {
 export async function waitForHuman(timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!(await humanCheckShowing())) return { ok: true, url: (await page()).url() };
+    if (!(await humanCheckShowing())) {
+      // Remember the clearance so the next browser launch doesn't ask again.
+      const saved = await saveCookies({ force: true }).catch(() => 0);
+      console.log(`[amazon] human check cleared — saved ${saved} cookies`);
+      return { ok: true, url: (await page()).url() };
+    }
     await new Promise((r) => setTimeout(r, 1000));
   }
   return { ok: false, error: "The human check is still showing." };
