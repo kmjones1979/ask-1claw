@@ -247,69 +247,83 @@ export async function addCard(card: CardDetails, opts: { submit?: boolean } = {}
   steps.push("submitted card");
 
   // Follow-up steps vary: billing address choice, CVV confirmation, or straight to success.
+  const last4 = card.pan.slice(-4);
+  const addressMatches = [shipToMatch(), shipZip].filter(Boolean) as string[];
+  let addressDone = false;
+  let cvvDone = false;
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 1200));
-    const f = (await apxFrame(1_500)) ?? frame;
+    await new Promise((r) => setTimeout(r, 600));
+    // Done = the wallet lists the new card and Amazon's card modal has closed.
+    const main = await p
+      .evaluate((l4) => {
+        const modalOpen = Array.from(document.querySelectorAll<HTMLIFrameElement>("iframe[name^='ApxSecureIframe']")).some((f) => {
+          const r = f.getBoundingClientRect();
+          return r.width > 50 && r.height > 50 && getComputedStyle(f).visibility !== "hidden";
+        });
+        return { added: new RegExp(`ending in\\s*(?:•+\\s*)?${l4}`).test(document.body.innerText), modalOpen };
+      }, last4)
+      .catch(() => ({ added: false, modalOpen: true }));
+    if (main.added && !main.modalOpen) return { ok: true, steps, last4 };
+
+    const f = (await apxFrame(800)) ?? frame;
     const state = await f
       .evaluate(() => {
         const t = document.body?.innerText ?? "";
         return {
-          text: t.slice(0, 600),
           address: /billing address|use this address|select an address/i.test(t),
           cvv: Boolean(document.querySelector('input[autocomplete="cc-csc"]')),
           error: (document.querySelector('[role="alert"], .a-alert-error')?.textContent ?? "").trim(),
         };
       })
       .catch(() => null);
-    const added = await p
-      .evaluate((last4) => new RegExp(`ending in\\s*(?:•+\\s*)?${last4}`).test(document.body.innerText), card.pan.slice(-4))
-      .catch(() => false);
-    if (added && !state?.address && !state?.cvv) return { ok: true, steps, last4: card.pan.slice(-4) };
     if (state?.error) return { ok: false, steps, error: `Amazon: ${state.error.slice(0, 200)}` };
-    if (state?.cvv && card.cvv) {
+    if (state?.cvv && card.cvv && !cvvDone) {
       await frameType(f, 'input[autocomplete="cc-csc"]', card.cvv);
-      steps.push("entered CVV");
       await frameClickText(f, "Continue");
+      cvvDone = true;
+      steps.push("entered CVV");
       continue;
     }
-    // Never make the 1Claw card the account default — it's only selected for this order.
-    await f
-      .evaluate(() => {
-        for (const box of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))) {
-          const label = (box.closest("label")?.innerText ?? box.parentElement?.innerText ?? "").toLowerCase();
-          if (box.checked && /default/.test(label)) box.click();
-        }
-      })
-      .catch(() => {});
-    if (state?.address) {
-      // Use the shipping address as the billing address: pick the saved address with the shipping ZIP.
-      let picked = false;
-      if (shipZip) {
-        picked = await f
-          .evaluate((zip) => {
-            const opts = Array.from(document.querySelectorAll<HTMLElement>("[role=radio], label, li, [role=button], div"))
-              .filter((e) => e.children.length < 15 && e.getBoundingClientRect().width > 0 && (e.innerText ?? "").includes(zip))
-              .sort((a, b) => (a.innerText?.length ?? 0) - (b.innerText?.length ?? 0));
-            const el = opts[0];
+    if (state?.address && !addressDone) {
+      // Never make the 1Claw card the account default — it's only selected for this order.
+      await f
+        .evaluate(() => {
+          for (const box of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))) {
+            const label = (box.closest("label")?.innerText ?? box.parentElement?.innerText ?? "").toLowerCase();
+            if (box.checked && /default/.test(label)) box.click();
+          }
+        })
+        .catch(() => {});
+      // Billing address = the demo shipping address: match its street first, then its ZIP.
+      let picked = "";
+      for (const m of addressMatches) {
+        const ok = await f
+          .evaluate((want) => {
+            const w = want.toLowerCase();
+            const el = Array.from(document.querySelectorAll<HTMLElement>("[role=radio], label, li, [role=button], div"))
+              .filter((e) => e.children.length < 15 && e.getBoundingClientRect().width > 0 && (e.innerText ?? "").toLowerCase().includes(w))
+              .sort((x, y) => (x.innerText?.length ?? 0) - (y.innerText?.length ?? 0))[0];
             if (!el) return false;
             el.setAttribute("data-agent-target", "1");
             return true;
-          }, shipZip)
+          }, m)
           .catch(() => false);
-        if (picked) {
+        if (ok) {
           await frameClick(f, '[data-agent-target="1"]');
           await f.evaluate(() => document.querySelector('[data-agent-target="1"]')?.removeAttribute("data-agent-target")).catch(() => {});
-          await new Promise((r) => setTimeout(r, 600));
+          picked = m;
+          break;
         }
       }
-      if (!picked && !(await f.evaluate(() => /default|shipping/i.test(document.body.innerText)).catch(() => false))) {
-        return { ok: false, steps, error: `Amazon wants a billing address but none matching the shipping ZIP ${shipZip || "(unknown)"} was offered.` };
-      }
+      if (!picked) return { ok: false, steps, error: `Amazon wants a billing address but none matching ${addressMatches.join(" / ") || "the shipping address"} was offered.` };
+      await new Promise((r) => setTimeout(r, 300));
       (await frameClickText(f, "Use this address")) || (await frameClickText(f, "Continue")) || (await frameClickText(f, "Save"));
-      steps.push(picked ? `billing address = shipping address (${shipZip})` : "billing address = default address");
+      addressDone = true;
+      steps.push(`billing address = ${picked}`);
       continue;
     }
+    // Card listed but modal still finishing: keep polling briefly.
   }
   return { ok: false, steps, error: "Timed out waiting for Amazon to confirm the card. Take a screenshot to see where it is." };
 }
@@ -612,7 +626,13 @@ export async function goToCheckout() {
       cart_items: cart.items,
     };
   }
-  return { ok: Boolean(where?.startsWith("checkout")), cart_items: cart.items, ...summary, url: p.url() };
+  return {
+    ok: Boolean(where?.startsWith("checkout")),
+    cart_items: cart.items,
+    ...summary,
+    url: p.url(),
+    next_step: "The address and total are set. Don't click anything on the checkout page — call issue_card next (or amazon_select_card if the card is already added).",
+  };
 }
 
 const totals = globalThis as { __checkoutTotal?: { usd: number; at: number } };
