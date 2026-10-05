@@ -209,6 +209,13 @@ export async function addCard(card: CardDetails, opts: { submit?: boolean } = {}
   const p = await goto(`${AMZ}/cpe/yourpayments/wallet`);
   const steps: string[] = [];
   if (!(await waitForAny({ add: "text=Add a payment method" }, 12_000))) return { ok: false, error: "Wallet page didn't load." };
+  // Billing address = the shipping address. Amazon's header shows where orders ship ("Deliver to … City 12345");
+  // we match that ZIP when Amazon asks which saved address to bill.
+  const shipZip =
+    process.env.CARD_BILLING_ZIP ||
+    (await p
+      .evaluate(() => (document.querySelector("#glow-ingress-line2")?.textContent ?? "").match(/\b\d{5}\b/)?.[0] ?? "")
+      .catch(() => ""));
   if (!(await clickTextUntil("Add a payment method", { cc: "text=Add a credit or debit card" })))
     return { ok: false, steps, error: "Couldn't open 'Add a payment method'." };
   steps.push("opened add payment method");
@@ -271,9 +278,31 @@ export async function addCard(card: CardDetails, opts: { submit?: boolean } = {}
       })
       .catch(() => {});
     if (state?.address) {
-      // Prefer the saved address (first option), then confirm.
+      // Use the shipping address as the billing address: pick the saved address with the shipping ZIP.
+      let picked = false;
+      if (shipZip) {
+        picked = await f
+          .evaluate((zip) => {
+            const opts = Array.from(document.querySelectorAll<HTMLElement>("[role=radio], label, li, [role=button], div"))
+              .filter((e) => e.children.length < 15 && e.getBoundingClientRect().width > 0 && (e.innerText ?? "").includes(zip))
+              .sort((a, b) => (a.innerText?.length ?? 0) - (b.innerText?.length ?? 0));
+            const el = opts[0];
+            if (!el) return false;
+            el.setAttribute("data-agent-target", "1");
+            return true;
+          }, shipZip)
+          .catch(() => false);
+        if (picked) {
+          await frameClick(f, '[data-agent-target="1"]');
+          await f.evaluate(() => document.querySelector('[data-agent-target="1"]')?.removeAttribute("data-agent-target")).catch(() => {});
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }
+      if (!picked && !(await f.evaluate(() => /default|shipping/i.test(document.body.innerText)).catch(() => false))) {
+        return { ok: false, steps, error: `Amazon wants a billing address but none matching the shipping ZIP ${shipZip || "(unknown)"} was offered.` };
+      }
       (await frameClickText(f, "Use this address")) || (await frameClickText(f, "Continue")) || (await frameClickText(f, "Save"));
-      steps.push("chose billing address");
+      steps.push(picked ? `billing address = shipping address (${shipZip})` : "billing address = default address");
       continue;
     }
   }
