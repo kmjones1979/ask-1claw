@@ -144,6 +144,19 @@ export default function Agent() {
           }}
         />
       )}
+
+      <a
+        href="https://1claw.co"
+        target="_blank"
+        rel="noreferrer"
+        className={`fixed bottom-4 right-5 z-30 items-center gap-2.5 opacity-80 transition hover:opacity-100 ${
+          mode === "chat" ? "hidden lg:flex" : "flex"
+        }`}
+      >
+        <span className="text-[11px] uppercase tracking-[0.18em] text-zinc-400">Powered by</span>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/1claw-logo.svg" alt="1Claw" className="h-6 w-auto" />
+      </a>
     </div>
   );
 }
@@ -167,6 +180,13 @@ function Portrait(props: {
   onMic: () => void;
 }) {
   const { state, level, caption, heard, steps, onMic } = props;
+  // Only render the portrait once we know public/agent.png exists (avoids a broken-image flash).
+  const [hasPortrait, setHasPortrait] = useState(false);
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => setHasPortrait(true);
+    img.src = "/agent.png";
+  }, []);
   const scale = 1 + level * 0.25;
   const ring =
     state === "listening"
@@ -189,13 +209,10 @@ function Portrait(props: {
           style={{ transform: `scale(${scale})`, transition: "transform 80ms linear" }}
         >
           {/* Drop your agent portrait at public/agent.png (or .jpg / .mp4 loop). */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/agent.png"
-            alt="Agent"
-            className="h-full w-full object-cover"
-            onError={(e) => ((e.currentTarget.style.display = "none"))}
-          />
+          {hasPortrait && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src="/agent.png" alt="Agent" className="h-full w-full object-cover" />
+          )}
           <div className="absolute inset-0 -z-10 bg-gradient-to-b from-indigo-500/40 via-fuchsia-500/20 to-black" />
           <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent" />
         </div>
