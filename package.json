@@ -6,12 +6,23 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "amazon-login": "node --env-file-if-exists=.env scripts/amazon-login.mjs"
   },
   "dependencies": {
+    "@1claw/browser-bridge": "^0.1.0",
+    "@1claw/sdk": "^0.61.36",
+    "@ai-sdk/anthropic": "^4.0.72",
+    "@ai-sdk/mcp": "^2.0.67",
+    "@ai-sdk/react": "^4.0.131",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ai": "^7.0.128",
     "next": "16.3.8",
+    "puppeteer-core": "^25.12.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "server-only": "^0.0.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

@@ -1,36 +1,25 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Ask 1Claw
 
-## Getting Started
+Voice agent for a live demo: speak to it, it answers with ElevenLabs, and it pays for things
+onchain through 1Claw — USDC on Base → prepaid Laso card → Amazon checkout via 1Claw browser-bridge.
 
-First, run the development server:
+## Setup
+1. `cp .env.example .env` and fill it in (see comments).
+2. In the 1Claw dashboard, for the agent in `ONECLAW_AGENT_ID`:
+   - Shroud enabled + org **LLM Token Billing** on (the LLM is billed through Shroud).
+   - Cards enabled; max order / daily limit ≥ `CARD_MAX_USD`; **agent card reveal enabled**
+     (the server reveals the card to type it — the model never sees the number).
+   - Card approval: on = you approve live on your phone (nice stage moment), off = fully autonomous.
+   - An EVM signing key funded with USDC on Base.
+3. `npm run amazon-login` — sign in to Amazon in the window that opens, then press Enter.
+4. `npm run dev` → http://localhost:3000. Drop a portrait at `public/agent.png`.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Using it
+- **Portrait** (default) / **Chat** toggle top-right. Hold **Space** or tap the mic to talk.
+- The agent's browser window is visible (`BROWSER_HEADLESS=false`) so the audience can watch.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Layout
+- `src/app/api/chat` — agent loop (AI SDK, Claude via 1Claw Shroud)
+- `src/lib/tools.ts` — 1Claw wallet/card tools + browser tools
+- `src/lib/browser.ts` — browser-bridge + puppeteer-core (CDP allowlist-safe actions)
+- `src/app/api/tts`, `src/app/api/stt` — ElevenLabs
