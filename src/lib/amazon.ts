@@ -59,7 +59,9 @@ async function waitForAny(selectors: Record<string, string>, timeout = 12_000) {
     const hit = await p
       .evaluate((sels: Record<string, string>) => {
         for (const [k, s] of Object.entries(sels)) {
-          if (s.startsWith("text=")) {
+          if (s.startsWith("url=")) {
+            if (location.href.includes(s.slice(4))) return k;
+          } else if (s.startsWith("text=")) {
             if (document.body?.innerText.toLowerCase().includes(s.slice(5).toLowerCase())) return k;
           } else if (document.querySelector(s)) return k;
         }
@@ -405,11 +407,11 @@ export async function addToCart(asin: string) {
 
 export async function viewCart() {
   const p = await goto(`${AMZ}/gp/cart/view.html`);
-  await waitForAny({ cart: "#sc-active-cart, .sc-list-item", empty: "text=Your Amazon Cart is empty" });
+  await waitForAny({ cart: "#sc-active-cart .sc-list-item, #sc-subtotal-amount-buybox", empty: "text=Your Amazon Cart is empty" }, 8_000);
   return p.evaluate(() => ({
     items: Array.from(document.querySelectorAll<HTMLElement>("#sc-active-cart .sc-list-item[data-asin]")).map((el) => ({
       asin: el.dataset.asin,
-      title: (el.querySelector(".a-truncate-full, .sc-product-title")?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 100),
+      title: (el.querySelector(".a-truncate-full")?.textContent || el.querySelector(".sc-product-title")?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100),
       quantity: el.dataset.quantity,
       price: el.dataset.price,
     })),
@@ -420,20 +422,53 @@ export async function viewCart() {
 export async function goToCheckout() {
   const cart = await viewCart();
   if (cart.items.length === 0) return { ok: false, error: "Cart is empty." };
-  await clickSel(
-    'input[name="proceedToRetailCheckout"], #sc-buy-box-ptc-button input, [data-feature-id="proceed-to-checkout-action"] input, [data-feature-id="proceed-to-checkout-label"]',
-  );
   const p = await page();
-  await new Promise((r) => setTimeout(r, 1000));
-  await guardHuman();
+  // Submit the cart's checkout form directly — clicking its label div doesn't navigate.
+  const submitted = await p.evaluate(() => {
+    const form = document.querySelector<HTMLFormElement>("#gutterCartViewForm, form[action*='/checkout/entry/cart']");
+    if (!form) return false;
+    form.requestSubmit();
+    return true;
+  });
+  if (!submitted) await clickSel('input[name="proceedToRetailCheckout"], [data-feature-id="proceed-to-checkout-label"]');
   const where = await waitForAny(
-    { checkout: "#checkout-main, #spc-orders, #subtotals, form#spc-form, text=Place your order", signin: "#ap_email, #ap_password" },
-    20_000,
+    {
+      checkout: "url=/checkout/p/",
+      checkout2: "url=/gp/buy/",
+      signin: "#ap_email, #ap_password",
+      human: "form[action*='validateCaptcha']",
+    },
+    15_000,
   );
   if (where === "signin") return { ok: false, error: "Amazon is asking to sign in again. Re-run npm run amazon-login." };
+  await guardHuman();
+  // Let the checkout page render its summary (order total) before reading it.
+  await waitForAny({ total: "text=Order total", place: 'input[name="placeYourOrder1"], #submitOrderButtonId, #placeOrder' }, 8_000);
   // Skip Prime / interstitial upsells.
-  await clickSel("#prime-interstitial-nothanks-button, a[href*='prime'][class*='no-thanks'], #prime-declineCTA").catch(() => false);
-  return { ok: where === "checkout", cart_items: cart.items, ...(await checkoutSummary()), url: p.url() };
+  await clickSel("#prime-interstitial-nothanks-button, #prime-declineCTA").catch(() => false);
+  const summary = await checkoutSummary();
+  // Checkout can pull in items the cart page doesn't show (e.g. a separate Amazon Haul cart).
+  // Only ever pay for exactly what we put in the cart.
+  const expected = cart.items.reduce((n, i) => n + (Number(i.quantity) || 1), 0);
+  const extra = await p.evaluate(() => {
+    const body = document.body.innerText;
+    return {
+      count: Number(body.match(/Items\s*\((\d+)\)/i)?.[1] ?? 0),
+      needsUpdates: /make updates to your items|problem with some of the items/i.test(body),
+    };
+  });
+  if ((extra.count && extra.count !== expected) || extra.needsUpdates) {
+    totals.__checkoutTotal = undefined; // never order a card for a total that includes other items
+    return {
+      ok: false,
+      error:
+        `Checkout contains ${extra.count || "extra"} items but the cart only has ${expected} — other items (likely from the Amazon Haul cart) were pulled in` +
+        (extra.needsUpdates ? ", and Amazon wants changes to some items" : "") +
+        ". Stop and ask the user to empty their other carts before buying.",
+      cart_items: cart.items,
+    };
+  }
+  return { ok: Boolean(where?.startsWith("checkout")), cart_items: cart.items, ...summary, url: p.url() };
 }
 
 const totals = globalThis as { __checkoutTotal?: { usd: number; at: number } };
