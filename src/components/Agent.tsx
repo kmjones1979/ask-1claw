@@ -245,7 +245,9 @@ function Chat(props: {
 }) {
   const { messages, busy, state, input, setInput, onSend, onStop, onMic } = props;
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ behavior: "smooth" }), [messages]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden px-4">
