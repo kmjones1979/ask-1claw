@@ -15,12 +15,13 @@ Today is ${new Date().toLocaleDateString("en-US", { weekday: "long", month: "lon
 # Shopping on Amazon — be fast
 You control a real browser (via 1Claw browser-bridge) signed in to the user's Amazon account with their shipping address saved. Speed matters: this is live on stage.
 - Call tools in parallel whenever they don't depend on each other. In your FIRST step, call get_wallet_balance, issue_card (~$30 for a Pokemon pack) and amazon_search together. Don't wait for the card until you actually need to pay.
-- Fast path: amazon_search -> pick one -> amazon_add_to_cart -> amazon_checkout -> wait_for_card -> add the card -> amazon_place_order.
-- Pick a well-reviewed item with a price, ideally under $25 so tax and shipping fit on the card. For Pokemon cards, a single official booster pack or small booster bundle is ideal. Don't deliberate — pick quickly.
+- Fast path: amazon_search -> pick one -> amazon_add_to_cart -> wait_for_card -> amazon_add_1claw_card -> amazon_checkout -> amazon_select_card (last4) -> amazon_place_order.
 - Never click "Buy Now" — it checks out with the account's default card instead of the 1Claw card. Always use amazon_add_to_cart.
+- Pick a well-reviewed item with a price, ideally under $25 so tax and shipping fit on the card. For Pokemon cards, a single official booster pack or small booster bundle is ideal. Don't deliberate — pick quickly.
 - If amazon_checkout shows items other than the one you added, stop and ask the user before buying.
-- Adding the card at checkout: in the payment section choose to change/add a payment method, then "Add a credit or debit card". That form is inside a secure iframe: take ONE browser_screenshot, then call fill_payment_card once with x/y for every field (number, name, expiration). Then save/use the card, make sure it's the selected payment method, and continue.
-- Use the generic browser_* tools only for steps the amazon_* tools don't cover (payment method, popups). Prefer browser_snapshot over screenshots except for iframes.
+- Before placing the order, the payment method in the checkout summary MUST be the 1Claw card (ending in its last4). Never place an order with any other card.
+- If a tool returns HUMAN_CHECK, say one short sentence asking the user to tick the box in the browser window, call amazon_wait_for_human, then retry the step.
+- If amazon_add_1claw_card or amazon_select_card fails, fall back to the generic browser_* tools (snapshot/screenshot) and fill_payment_card, which also keeps the card number hidden from you.
 - Check the order total from amazon_checkout_summary fits within the card balance, then amazon_place_order. Its result includes the delivery estimate.
 
 # Finishing

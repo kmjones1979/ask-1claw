@@ -132,6 +132,40 @@ export const tools = {
     execute: ({ asin }) => safe(() => amazon.addToCart(asin), "amazon_add_to_cart"),
   }),
 
+  amazon_add_1claw_card: tool({
+    description:
+      "Add the 1Claw card (from issue_card / wait_for_card) to the Amazon account as a payment method, in one step. " +
+      "The card number is fetched and typed server-side — you never see it. Call this after the card is ready and BEFORE amazon_checkout. Returns last4.",
+    inputSchema: z.object({ card_id: z.string() }),
+    execute: ({ card_id }) =>
+      safe(async () => {
+        const card = await oneclaw.revealCard(card_id);
+        if (!card.pan || !card.exp_month || !card.exp_year) return { ok: false, error: "Card details aren't available yet." };
+        const name = oneclaw.billingProfile().name;
+        if (!name) return { ok: false, error: "CARD_HOLDER_NAME is not set in .env." };
+        return amazon.addCard({
+          pan: card.pan,
+          mm: String(card.exp_month).padStart(2, "0"),
+          yy: String(card.exp_year).slice(-2),
+          name,
+          cvv: card.cvv,
+        });
+      }, "amazon_add_1claw_card", 90_000),
+  }),
+
+  amazon_select_card: tool({
+    description: "On the checkout page, select the card ending in last4 as the payment method. Returns the updated checkout summary.",
+    inputSchema: z.object({ last4: z.string().length(4) }),
+    execute: ({ last4 }) => safe(() => amazon.selectCardAtCheckout(last4), "amazon_select_card"),
+  }),
+
+  amazon_wait_for_human: tool({
+    description:
+      "After asking the user to tick Amazon's 'I am human' check in the browser, wait (up to 2 minutes) until it's cleared.",
+    inputSchema: z.object({}),
+    execute: () => safe(() => amazon.waitForHuman(), "amazon_wait_for_human", 130_000),
+  }),
+
   amazon_checkout: tool({
     description:
       "Go from the cart to the checkout page. Returns cart items, shipping address, current payment method, order total and delivery estimate.",

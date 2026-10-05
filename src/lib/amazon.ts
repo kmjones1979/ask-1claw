@@ -13,7 +13,43 @@ async function page() {
   return (await getBrowser()).page;
 }
 
-const goto = (url: string) => fastGoto(url);
+/**
+ * Amazon sometimes interposes an "I am human" / CAPTCHA page. We never solve it
+ * automatically — the agent asks the person at the keyboard to tick it, then
+ * calls waitForHuman().
+ */
+const HUMAN_CHECK_ERROR =
+  "HUMAN_CHECK: Amazon is showing an 'I am human' check. Ask the user (one short sentence) to tick the box in the browser window, then call amazon_wait_for_human and retry this step.";
+
+async function humanCheckShowing() {
+  const p = await page();
+  return p
+    .evaluate(
+      () =>
+        Boolean(document.querySelector("form[action*='validateCaptcha'], #captchacharacters")) ||
+        /check the box to continue|i am human|enter the characters you see/i.test(document.body?.innerText.slice(0, 3000) ?? ""),
+    )
+    .catch(() => false);
+}
+
+async function guardHuman() {
+  if (await humanCheckShowing()) throw new Error(HUMAN_CHECK_ERROR);
+}
+
+export async function waitForHuman(timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await humanCheckShowing())) return { ok: true, url: (await page()).url() };
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return { ok: false, error: "The human check is still showing." };
+}
+
+async function goto(url: string) {
+  const p = await fastGoto(url);
+  await guardHuman();
+  return p;
+}
 
 /** Wait until any selector matches (or text appears). Returns the matching key, or null on timeout. */
 async function waitForAny(selectors: Record<string, string>, timeout = 12_000) {
@@ -53,6 +89,252 @@ async function clickSel(selector: string) {
   await new Promise((r) => setTimeout(r, 150));
   await p.mouse.click(pt.x, pt.y, { delay: 30 });
   return true;
+}
+
+/** Click the first visible clickable element (in the main page) whose text contains `text`. */
+async function clickText(text: string) {
+  const p = await page();
+  const pt = await p.evaluate((t) => {
+    const want = t.toLowerCase();
+    const els = Array.from(
+      document.querySelectorAll<HTMLElement>("a, button, input[type=submit], .a-button-text, [role=button], [role=link], label"),
+    );
+    const el = els.find((e) => {
+      const r = e.getBoundingClientRect();
+      const label = (e.innerText || (e as HTMLInputElement).value || e.getAttribute("aria-label") || "").toLowerCase();
+      return r.width > 0 && r.height > 0 && label.includes(want);
+    });
+    if (!el) return null;
+    el.scrollIntoView({ block: "center" });
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, text);
+  if (!pt) return false;
+  await new Promise((r) => setTimeout(r, 150));
+  await p.mouse.click(pt.x, pt.y, { delay: 30 });
+  return true;
+}
+
+// ── Amazon's secure payment iframe (apx-security.amazon.com) ────────────────
+// The card form lives in a cross-origin iframe. Puppeteer can evaluate inside it
+// through the bridge, but its inputs are React-controlled, so we focus them with
+// real mouse clicks (iframe offset + element offset) and type real keystrokes.
+
+async function apxFrame(timeout = 15_000, needSelector = "input") {
+  const p = await page();
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    for (const f of p.frames()) {
+      if (!f.url().includes("apx-security.amazon.com")) continue;
+      const ok = await f.evaluate((s) => Boolean(document.querySelector(s)), needSelector).catch(() => false);
+      if (ok) return f;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return null;
+}
+
+type Frame = NonNullable<Awaited<ReturnType<typeof apxFrame>>>;
+
+/** Absolute viewport point for an element inside the apx iframe. */
+async function framePoint(frame: Frame, selector: string) {
+  const p = await page();
+  const inner = await frame.evaluate((s) => {
+    const el = Array.from(document.querySelectorAll<HTMLElement>(s)).find((e) => e.getBoundingClientRect().width > 0);
+    if (!el) return null;
+    el.scrollIntoView({ block: "center" });
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, selector);
+  if (!inner) return null;
+  const frameName = await frame.evaluate(() => window.name).catch(() => "");
+  const offset = await p.evaluate((name) => {
+    const iframes = Array.from(document.querySelectorAll<HTMLIFrameElement>("iframe"));
+    const el =
+      iframes.find((f) => name && f.name === name) ??
+      iframes.find((f) => f.name.startsWith("ApxSecureIframe") && f.getBoundingClientRect().width > 0);
+    const r = el?.getBoundingClientRect();
+    return r ? { x: r.x, y: r.y } : { x: 0, y: 0 };
+  }, frameName);
+  return { x: offset.x + inner.x, y: offset.y + inner.y };
+}
+
+async function frameClick(frame: Frame, selector: string) {
+  const pt = await framePoint(frame, selector);
+  if (!pt) return false;
+  await (await page()).mouse.click(pt.x, pt.y, { delay: 30 });
+  return true;
+}
+
+/** Click a clickable inside the frame by its visible text. */
+async function frameClickText(frame: Frame, text: string) {
+  const marked = await frame.evaluate((t) => {
+    const want = t.toLowerCase();
+    const el = Array.from(document.querySelectorAll<HTMLElement>("button, [role=button], a, input[type=submit], label, [role=radio]")).find(
+      (e) => e.getBoundingClientRect().width > 0 && (e.innerText || (e as HTMLInputElement).value || "").toLowerCase().includes(want),
+    );
+    if (!el) return false;
+    el.setAttribute("data-agent-target", "1");
+    return true;
+  }, text);
+  if (!marked) return false;
+  const ok = await frameClick(frame, '[data-agent-target="1"]');
+  await frame.evaluate(() => document.querySelector('[data-agent-target="1"]')?.removeAttribute("data-agent-target")).catch(() => {});
+  return ok;
+}
+
+async function frameType(frame: Frame, selector: string, value: string) {
+  const p = await page();
+  if (!(await frameClick(frame, selector))) return false;
+  await p.keyboard.down("Meta");
+  await p.keyboard.press("KeyA");
+  await p.keyboard.up("Meta");
+  await p.keyboard.press("Backspace");
+  await p.keyboard.type(value, { delay: 30 });
+  return true;
+}
+
+export type CardDetails = { pan: string; mm: string; yy: string; name: string; cvv?: string; zip?: string };
+
+/**
+ * Adds a card through Your Payments → Add a payment method → Add a credit or debit card.
+ * Doing it in the wallet (before checkout) is the most predictable path; at checkout
+ * the agent then just selects the card ending in last4.
+ */
+export async function addCard(card: CardDetails, opts: { submit?: boolean } = {}) {
+  // Added as an ordinary saved card — never set as the default payment method.
+  const p = await goto(`${AMZ}/cpe/yourpayments/wallet`);
+  const steps: string[] = [];
+  if (!(await waitForAny({ add: "text=Add a payment method" }, 12_000))) return { ok: false, error: "Wallet page didn't load." };
+  if (!(await clickTextUntil("Add a payment method", { cc: "text=Add a credit or debit card" })))
+    return { ok: false, steps, error: "Couldn't open 'Add a payment method'." };
+  steps.push("opened add payment method");
+  if (!(await clickTextUntil("Add a credit or debit card", { frame: "iframe[name^='ApxSecureIframe']" })))
+    return { ok: false, steps, error: "Couldn't open the card form." };
+  steps.push("opened card form");
+
+  const frame = await apxFrame(15_000, 'input[autocomplete="cc-number"]');
+  if (!frame) return { ok: false, steps, error: "Card form iframe didn't appear." };
+
+  if (!(await frameType(frame, 'input[autocomplete="cc-number"]', card.pan))) return { ok: false, steps, error: "Card number field not found." };
+  if (!(await frameType(frame, 'input[autocomplete="cc-exp"]', `${card.mm}${card.yy}`))) return { ok: false, steps, error: "Expiration field not found." };
+  if (!(await frameType(frame, 'input[autocomplete="name"], input[placeholder="Name on card"]', card.name))) return { ok: false, steps, error: "Name field not found." };
+  steps.push("filled number, expiration, name");
+
+  // Verify the form took the values (only lengths/last4 — never return the number).
+  const check = await frame.evaluate(() => {
+    const v = (s: string) => (document.querySelector<HTMLInputElement>(s)?.value ?? "").replace(/\D/g, "");
+    return { numberDigits: v('input[autocomplete="cc-number"]').length, last4: v('input[autocomplete="cc-number"]').slice(-4), exp: (document.querySelector<HTMLInputElement>('input[autocomplete="cc-exp"]')?.value ?? "") };
+  });
+  if (opts.submit === false) return { ok: true, steps, check, submitted: false };
+
+  await frameClickText(frame, "Add and continue");
+  steps.push("submitted card");
+
+  // Follow-up steps vary: billing address choice, CVV confirmation, or straight to success.
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1200));
+    const f = (await apxFrame(1_500)) ?? frame;
+    const state = await f
+      .evaluate(() => {
+        const t = document.body?.innerText ?? "";
+        return {
+          text: t.slice(0, 600),
+          address: /billing address|use this address|select an address/i.test(t),
+          cvv: Boolean(document.querySelector('input[autocomplete="cc-csc"]')),
+          error: (document.querySelector('[role="alert"], .a-alert-error')?.textContent ?? "").trim(),
+        };
+      })
+      .catch(() => null);
+    const added = await p
+      .evaluate((last4) => new RegExp(`ending in\\s*(?:•+\\s*)?${last4}`).test(document.body.innerText), card.pan.slice(-4))
+      .catch(() => false);
+    if (added && !state?.address && !state?.cvv) return { ok: true, steps, last4: card.pan.slice(-4) };
+    if (state?.error) return { ok: false, steps, error: `Amazon: ${state.error.slice(0, 200)}` };
+    if (state?.cvv && card.cvv) {
+      await frameType(f, 'input[autocomplete="cc-csc"]', card.cvv);
+      steps.push("entered CVV");
+      await frameClickText(f, "Continue");
+      continue;
+    }
+    // Never make the 1Claw card the account default — it's only selected for this order.
+    await f
+      .evaluate(() => {
+        for (const box of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))) {
+          const label = (box.closest("label")?.innerText ?? box.parentElement?.innerText ?? "").toLowerCase();
+          if (box.checked && /default/.test(label)) box.click();
+        }
+      })
+      .catch(() => {});
+    if (state?.address) {
+      // Prefer the saved address (first option), then confirm.
+      (await frameClickText(f, "Use this address")) || (await frameClickText(f, "Continue")) || (await frameClickText(f, "Save"));
+      steps.push("chose billing address");
+      continue;
+    }
+  }
+  return { ok: false, steps, error: "Timed out waiting for Amazon to confirm the card. Take a screenshot to see where it is." };
+}
+
+/**
+ * On the checkout page, select the card ending in last4 as the payment method.
+ * The payment selector may be in the main page or in an apx iframe.
+ */
+export async function selectCardAtCheckout(last4: string) {
+  const p = await page();
+  await guardHuman();
+  // Open the payment chooser if it's collapsed.
+  (await clickText("Change payment method")) || (await clickText("Change")) ;
+  await new Promise((r) => setTimeout(r, 1500));
+
+  const pattern = `ending in`;
+  const inMain = await p.evaluate(
+    (l4, pat) => {
+      const el = Array.from(document.querySelectorAll<HTMLElement>("label, [role=radio], .pmts-instrument-selector, li, div"))
+        .filter((e) => e.children.length < 12 && e.getBoundingClientRect().width > 0)
+        .find((e) => e.innerText?.includes(pat) && e.innerText.includes(l4));
+      if (!el) return false;
+      el.setAttribute("data-agent-target", "1");
+      return true;
+    },
+    last4,
+    pattern,
+  );
+  if (inMain) {
+    await clickSel('[data-agent-target="1"]');
+  } else {
+    const f = await apxFrame(5_000);
+    if (!f) return { ok: false, error: `Couldn't find the card ending in ${last4} on the checkout page.` };
+    const found = await f.evaluate(
+      (l4) => {
+        const el = Array.from(document.querySelectorAll<HTMLElement>("label, [role=radio], [role=button], li, div"))
+          .filter((e) => e.children.length < 12 && e.getBoundingClientRect().width > 0)
+          .find((e) => e.innerText?.includes(l4));
+        if (!el) return false;
+        el.setAttribute("data-agent-target", "1");
+        return true;
+      },
+      last4,
+    );
+    if (!found) return { ok: false, error: `Couldn't find the card ending in ${last4} in the payment selector.` };
+    await frameClick(f, '[data-agent-target="1"]');
+    await new Promise((r) => setTimeout(r, 800));
+    await frameClickText(f, "Use this payment method");
+  }
+  await new Promise((r) => setTimeout(r, 800));
+  (await clickText("Use this payment method")) || (await clickText("Continue"));
+  await new Promise((r) => setTimeout(r, 2000));
+  return { ok: true, ...(await checkoutSummary()) };
+}
+
+/** Click by text, retrying until `next` shows up (pages often ignore clicks until their JS is ready). */
+async function clickTextUntil(text: string, next: Record<string, string>, attempts = 4) {
+  for (let i = 0; i < attempts; i++) {
+    await clickText(text);
+    if (await waitForAny(next, 3_000)) return true;
+  }
+  return false;
 }
 
 async function signedIn() {
@@ -126,7 +408,7 @@ export async function viewCart() {
   return p.evaluate(() => ({
     items: Array.from(document.querySelectorAll<HTMLElement>("#sc-active-cart .sc-list-item[data-asin]")).map((el) => ({
       asin: el.dataset.asin,
-      title: (el.querySelector(".sc-product-title, .a-truncate-full")?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 100),
+      title: (el.querySelector(".a-truncate-full, .sc-product-title")?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 100),
       quantity: el.dataset.quantity,
       price: el.dataset.price,
     })),
@@ -137,8 +419,12 @@ export async function viewCart() {
 export async function goToCheckout() {
   const cart = await viewCart();
   if (cart.items.length === 0) return { ok: false, error: "Cart is empty." };
-  await clickSel('input[name="proceedToRetailCheckout"], #sc-buy-box-ptc-button input, [data-feature-id="proceed-to-checkout-action"] input');
+  await clickSel(
+    'input[name="proceedToRetailCheckout"], #sc-buy-box-ptc-button input, [data-feature-id="proceed-to-checkout-action"] input, [data-feature-id="proceed-to-checkout-label"]',
+  );
   const p = await page();
+  await new Promise((r) => setTimeout(r, 1000));
+  await guardHuman();
   const where = await waitForAny(
     { checkout: "#checkout-main, #spc-orders, #subtotals, form#spc-form, text=Place your order", signin: "#ap_email, #ap_password" },
     20_000,
