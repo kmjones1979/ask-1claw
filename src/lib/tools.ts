@@ -3,6 +3,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import * as amazon from "./amazon";
 import * as browser from "./browser";
+import * as cards from "./cards";
 import * as oneclaw from "./oneclaw";
 
 const MAX_CARD_USD = Number(process.env.CARD_MAX_USD ?? 50);
@@ -57,7 +58,7 @@ export const tools = {
 
   issue_card: tool({
     description:
-      "Buy a prepaid virtual card from Laso Finance through 1Claw, paid with the agent's USDC on Base (x402), " +
+      "Buy a prepaid virtual card from Laso Finance, paid with the agent's USDC on Base over x402 (signed by its 1Claw key), " +
       "for EXACTLY the order total shown at Amazon checkout. Call amazon_checkout first — the amount is taken from it, not chosen by you. " +
       "Returns a masked card (id, status, last4). If it fails, do not retry more than once.",
     inputSchema: z.object({}),
@@ -67,7 +68,7 @@ export const tools = {
         if (!total) return { ok: false, error: "No checkout total yet. Call amazon_checkout first so the card matches the order total." };
         if (total < 5) return { ok: false, error: `Order total $${total.toFixed(2)} is below Laso's $5 card minimum.` };
         if (total > MAX_CARD_USD) return { ok: false, error: `Order total $${total.toFixed(2)} exceeds the $${MAX_CARD_USD} card limit.` };
-        return { ...(await oneclaw.orderCard(total.toFixed(2))), amount_usd: total.toFixed(2) };
+        return cards.order(total);
       }, "issue_card"),
   }),
 
@@ -75,7 +76,7 @@ export const tools = {
     description:
       "Wait until an ordered card is approved and ready to use (polls up to ~4 minutes). Returns masked card status.",
     inputSchema: z.object({ card_id: z.string() }),
-    execute: ({ card_id }) => safe(() => oneclaw.waitForCard(card_id), "wait_for_card", 300_000),
+    execute: ({ card_id }) => safe(() => cards.waitUntilReady(card_id), "wait_for_card", 300_000),
   }),
 
   fill_payment_card: tool({
@@ -96,7 +97,7 @@ export const tools = {
     }),
     execute: ({ card_id, fields }) =>
       safe(async () => {
-        const card = await oneclaw.revealCard(card_id);
+        const card = await cards.reveal(card_id);
         const billing = oneclaw.billingProfile();
         const mm = String(card.exp_month ?? "").padStart(2, "0");
         const yyyy = String(card.exp_year ?? "");
@@ -138,7 +139,7 @@ export const tools = {
     inputSchema: z.object({ card_id: z.string() }),
     execute: ({ card_id }) =>
       safe(async () => {
-        const card = await oneclaw.revealCard(card_id);
+        const card = await cards.reveal(card_id);
         if (!card.pan || !card.exp_month || !card.exp_year) return { ok: false, error: "Card details aren't available yet." };
         const name = oneclaw.billingProfile().name;
         if (!name) return { ok: false, error: "CARD_HOLDER_NAME is not set in .env." };
