@@ -4,7 +4,7 @@ export async function POST(req: Request) {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) return new Response("ELEVENLABS_API_KEY not set", { status: 500 });
 
-  const voiceId = process.env.ELEVENLABS_VOICE_ID ?? "QMJTqaMXmGnG8TCm8WQG"; // "Clyde" - vintage radio announcer
+  const voiceId = process.env.ELEVENLABS_VOICE_ID ?? "bwCXcoVxWNYMlC6Esa8u"; // Matthew Schmitz
   const res = await fetch(
     `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`,
     {

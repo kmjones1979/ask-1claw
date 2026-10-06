@@ -190,7 +190,7 @@ function Portrait(props: {
   useEffect(() => {
     const img = new Image();
     img.onload = () => setHasPortrait(true);
-    img.src = "/agent.png";
+    img.src = "/agent.jpg";
   }, []);
   const scale = 1 + level * 0.25;
   const ring =
@@ -213,10 +213,10 @@ function Portrait(props: {
           }`}
           style={{ transform: `scale(${scale})`, transition: "transform 80ms linear" }}
         >
-          {/* Drop your agent portrait at public/agent.png (or .jpg / .mp4 loop). */}
+          {/* Drop your agent portrait at public/agent.jpg. */}
           {hasPortrait && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src="/agent.png" alt="Agent" className="h-full w-full object-cover" />
+            <img src="/agent.jpg" alt="Agent" className="h-full w-full object-cover" />
           )}
           <div className="absolute inset-0 -z-10 bg-gradient-to-b from-claw-red/35 via-claw-red-low/20 to-claw-black" />
           <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent" />
