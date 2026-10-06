@@ -94,7 +94,7 @@ export default function Agent() {
       <header className="z-20 flex items-center justify-between px-5 py-4">
         <div className="flex items-center gap-2 text-sm font-medium tracking-wide text-white/80">
           <span className="inline-block h-2 w-2 rounded-full bg-claw-red shadow-[0_0_10px] shadow-claw-red" />
-          Ask Clyde
+          Ask Max
         </div>
         <div className="flex items-center gap-2">
           <button
