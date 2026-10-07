@@ -4,6 +4,7 @@ import { z } from "zod";
 import * as amazon from "./amazon";
 import * as browser from "./browser";
 import * as cards from "./cards";
+import * as laso from "./laso";
 import * as oneclaw from "./oneclaw";
 
 const MAX_CARD_USD = Number(process.env.CARD_MAX_USD ?? 50);
@@ -53,9 +54,9 @@ async function safe<T>(fn: () => Promise<T>, name = "tool", timeoutMs = 60_000) 
 export const tools = {
   // ── 1Claw: onchain wallet + cards ────────────────────────────────────────
   get_wallet_balance: tool({
-    description: "Get the agent's USDC balance on Base from its 1Claw wallet.",
+    description: "Get the agent's USDC balance on Base from its 1Claw wallet, plus its daily spending limit and how much is left today.",
     inputSchema: z.object({}),
-    execute: () => safe(() => oneclaw.getUsdcBalance(), "get_wallet_balance"),
+    execute: () => safe(async () => ({ ...(await oneclaw.getUsdcBalance()), daily_limit: laso.spendStatus() }), "get_wallet_balance"),
   }),
 
   issue_card: tool({

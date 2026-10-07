@@ -69,8 +69,43 @@ async function oneclawSigner() {
   };
 }
 
+/** Rolling-24h USDC spend cap for card purchases (DAILY_USDC_LIMIT, default $20). */
+export function dailyLimitUsd() {
+  return Number(process.env.DAILY_USDC_LIMIT ?? 20);
+}
+
+/** USDC spent on Laso cards in the last 24 hours (every paid order is recorded in the session). */
+export function spentLast24hUsd() {
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  return Object.values(session()?.cards ?? {})
+    .filter((c) => c.at >= since)
+    .reduce((sum, c) => sum + c.amount, 0);
+}
+
+export function spendStatus() {
+  const limit = dailyLimitUsd();
+  const spent = Math.round(spentLast24hUsd() * 100) / 100;
+  return { limit_usd: limit, spent_last_24h_usd: spent, remaining_usd: Math.max(0, Math.round((limit - spent) * 100) / 100) };
+}
+
+// One card purchase at a time, so two concurrent orders can't both pass the limit check.
+let orderLock: Promise<unknown> = Promise.resolve();
+
 /** Orders a USA prepaid card for exactly `amountUsd`, paid in USDC on Base. */
-export async function orderCard(amountUsd: number) {
+export function orderCard(amountUsd: number) {
+  const run = orderLock.then(() => orderCardUnlocked(amountUsd));
+  orderLock = run.catch(() => {});
+  return run;
+}
+
+async function orderCardUnlocked(amountUsd: number) {
+  const { limit_usd, spent_last_24h_usd, remaining_usd } = spendStatus();
+  if (amountUsd > remaining_usd + 0.005) {
+    throw new Error(
+      `DAILY_LIMIT: This order needs $${amountUsd.toFixed(2)} but the daily USDC limit is $${limit_usd.toFixed(2)} ` +
+        `and $${spent_last_24h_usd.toFixed(2)} was already spent in the last 24 hours ($${remaining_usd.toFixed(2)} left). Nothing was charged.`,
+    );
+  }
   const amount = amountUsd.toFixed(2);
   const expectedAtomic = BigInt(Math.round(amountUsd * 1e6));
   const signer = await oneclawSigner();
