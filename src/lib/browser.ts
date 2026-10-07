@@ -63,27 +63,49 @@ async function openTab(browser: Browser) {
  * is gone, the bridge is relaunched.
  */
 export async function getBrowser(): Promise<Session> {
+  return getBrowserInner(0);
+}
+
+async function relaunch(s: Session | undefined, why: string) {
+  console.warn(`[browser] ${why} — relaunching the browser`);
+  g.__bridge = undefined;
+  await s?.browser.disconnect().catch(() => {});
+  await s?.bridge.close().catch(() => {});
+}
+
+async function getBrowserInner(attempt: number): Promise<Session> {
   let s = await (g.__bridge ??= (async () => {
     const fresh = await launchBridgeSession();
     await restoreCookies(fresh.cdp);
+    // If Chromium or the bridge socket goes away (sleep, crash, network drop),
+    // forget this session so the next call starts a fresh one.
+    fresh.browser.once("disconnected", () => {
+      if (g.__bridge) console.warn("[browser] disconnected from Chromium");
+      g.__bridge = undefined;
+    });
     return fresh;
   })().catch((err) => {
     g.__bridge = undefined;
     throw err;
   }));
 
-  if (!s.browser.connected) {
-    console.warn("[browser] Chromium disconnected — relaunching");
-    await s.bridge.close().catch(() => {});
-    g.__bridge = undefined;
-    return getBrowser();
+  try {
+    if (!s.browser.connected) throw new Error("Chromium disconnected");
+    if (s.page.isClosed()) {
+      console.warn("[browser] agent tab was closed — opening a new one");
+      s = Object.assign(s, await openTab(s.browser));
+    }
+    // Cheap liveness probe: a dead CDP socket fails here instead of mid-tool.
+    await Promise.race([
+      s.page.evaluate(() => 1),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("browser not responding")), 5_000)),
+    ]);
+    return s;
+  } catch (err) {
+    if (attempt >= 1) throw err;
+    await relaunch(s, `browser unreachable (${err instanceof Error ? err.message : String(err)})`);
+    return getBrowserInner(attempt + 1);
   }
-  if (s.page.isClosed()) {
-    console.warn("[browser] agent tab was closed — opening a new one");
-    const tab = await openTab(s.browser);
-    s = Object.assign(s, tab);
-  }
-  return s;
 }
 
 const AMAZON_COOKIE_URLS = ["https://www.amazon.com", "https://amazon.com", "https://www.amazon.com/gp/buy", "https://www.amazon.com/ap/"];
