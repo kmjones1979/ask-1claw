@@ -95,11 +95,16 @@ async function getBrowserInner(attempt: number): Promise<Session> {
       console.warn("[browser] agent tab was closed — opening a new one");
       s = Object.assign(s, await openTab(s.browser));
     }
-    // Cheap liveness probe: a dead CDP socket fails here instead of mid-tool.
+    // Liveness probe at the CDP level (independent of page navigation — page.evaluate
+    // would throw "Execution context was destroyed" mid-navigation on a healthy browser).
     await Promise.race([
-      s.page.evaluate(() => 1),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("browser not responding")), 5_000)),
-    ]);
+      s.cdp.send("Page.getFrameTree"),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("browser not responding")), 8_000)),
+    ]).catch((err: Error) => {
+      // Navigation/context churn means the browser is alive and busy, not dead.
+      if (/context was destroyed|navigat|detached frame|Cannot find context/i.test(err.message)) return;
+      throw err;
+    });
     return s;
   } catch (err) {
     if (attempt >= 1) throw err;
