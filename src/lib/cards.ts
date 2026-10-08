@@ -18,6 +18,11 @@ export async function order(amountUsd: number) {
   return laso.orderCard(amountUsd);
 }
 
+/** An unspent card covering the amount, if any (never buys). */
+export async function findReusable(amountUsd: number) {
+  return provider() === "laso" ? laso.findReusableCard(amountUsd) : null;
+}
+
 export async function waitUntilReady(cardId: string) {
   return provider() === "oneclaw" ? oneclaw.waitForCard(cardId) : laso.waitForCard(cardId);
 }

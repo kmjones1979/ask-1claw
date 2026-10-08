@@ -19,6 +19,7 @@ Today is ${new Date().toLocaleDateString("en-US", { weekday: "long", month: "lon
 # Shopping on Amazon — be fast
 You control a real browser (via 1Claw browser-bridge) signed in to the user's Amazon account with their shipping address saved. Speed matters: this is live on stage.
 - FAST PATH (always try this first): call find_product (in parallel with get_wallet_balance), pick one result yourself, say one short sentence about what you're buying, then call buy_product with its asin. buy_product does the whole checkout — cart, exact-total Laso card, adding and selecting the card, placing the order — in one call. Don't call other shopping tools while it runs.
+- If a tool returns SIGN_IN_REQUIRED, ask the user in one short sentence to sign in to Amazon in the browser window, wait for them to say done, then retry.
 - If buy_product fails: HUMAN_CHECK → ask the user to tick the box, call amazon_wait_for_human, then call buy_product again (it resumes safely). DAILY_LIMIT → explain and stop. Anything else → say one short sentence and continue with the step-by-step tools below from the stage that failed.
 - Step-by-step tools (fallback only): amazon_search -> amazon_add_to_cart -> amazon_checkout -> issue_card -> wait_for_card -> amazon_add_1claw_card -> amazon_checkout -> amazon_select_card (last4) -> amazon_place_order (last4).
 - Never click "Buy Now" — it checks out with the account's default card instead of the 1Claw card. Always use amazon_add_to_cart.

@@ -1,5 +1,5 @@
 import "server-only";
-import { fastGoto, getBrowser, saveCookies } from "./browser";
+import { fastGoto, fillAmazonPassword, getBrowser, saveCookies } from "./browser";
 
 /**
  * Amazon-specific macros. Each one replaces a dozen generic snapshot/click round
@@ -50,9 +50,34 @@ export async function waitForHuman(timeoutMs = 120_000) {
   return { ok: false, error: "The human check is still showing." };
 }
 
+/**
+ * Amazon re-asks for the password on sensitive pages (checkout, payments) every ~15 min
+ * (max_auth_age). When that happens, 1Claw browser-bridge fills it from the encrypted vault.
+ */
+export async function handleReauth() {
+  const p = await page();
+  if (!/\/ap\/(signin|mfa|cvf)/.test(p.url())) return { reauthed: false };
+  const r = await fillAmazonPassword();
+  if (!r.ok) {
+    throw new Error(
+      `SIGN_IN_REQUIRED: Amazon wants the password again and the vault fill didn't work (${r.error}). ` +
+        "Ask the user to sign in in the browser window, then retry.",
+    );
+  }
+  console.log("[amazon] re-auth filled by browser-bridge from the vault");
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline && /\/ap\//.test(p.url())) await new Promise((r) => setTimeout(r, 300));
+  if (/\/ap\//.test(p.url())) {
+    throw new Error("SIGN_IN_REQUIRED: Amazon is still on its sign-in page (maybe a code or passkey prompt). Ask the user to finish signing in in the browser window, then retry.");
+  }
+  void saveCookies({ force: true }).catch(() => {});
+  return { reauthed: true };
+}
+
 async function goto(url: string) {
   const p = await fastGoto(url);
   await guardHuman();
+  await handleReauth();
   return p;
 }
 
@@ -605,7 +630,10 @@ export async function goToCheckout() {
     },
     15_000,
   );
-  if (where === "signin") return { ok: false, error: "Amazon is asking to sign in again. Re-run npm run amazon-login." };
+  if (where === "signin") {
+    await handleReauth();
+    await waitForAny({ checkout: "url=/checkout/p/", checkout2: "url=/gp/buy/" }, 15_000);
+  }
   await guardHuman();
   // Let the checkout page render its summary (order total) before reading it.
   await waitForAny({ total: "text=Order total", place: 'input[name="placeYourOrder1"], #submitOrderButtonId, #placeOrder' }, 8_000);

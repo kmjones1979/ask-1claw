@@ -40,7 +40,11 @@ export async function guardedPlaceOrder(last4: string) {
   return amazon.placeOrder();
 }
 
-export async function* buyProduct(asin: string): AsyncGenerator<Progress | Outcome> {
+/**
+ * `dryRun` (tests only, never exposed to the model): runs every stage but never buys a new
+ * card (only reuses an unspent one) and stops right before placing the order.
+ */
+export async function* buyProduct(asin: string, opts: { dryRun?: boolean } = {}): AsyncGenerator<Progress | Outcome> {
   let stage = "cart";
   try {
     // 1. Cart — exactly this one item.
@@ -67,6 +71,9 @@ export async function* buyProduct(asin: string): AsyncGenerator<Progress | Outco
     // 3. Card — reuse an unspent one, else buy one for exactly the total (daily limit enforced inside).
     stage = "card";
     yield step(stage, `Getting a $${total.toFixed(2)} card with USDC`);
+    if (opts.dryRun && !(await cards.findReusable(total))) {
+      return yield fail(stage, `Dry run: no unspent card covers $${total.toFixed(2)} and a dry run never buys one.`);
+    }
     const card = (await cards.order(total)) as { card_id: string; reused?: boolean };
     stage = "card_ready";
     yield step(stage, card.reused ? "Reusing an unspent card" : "Waiting for the card");
@@ -101,6 +108,10 @@ export async function* buyProduct(asin: string): AsyncGenerator<Progress | Outco
 
     // 6. Place the order behind the hard gate.
     stage = "place";
+    if (opts.dryRun) {
+      const review = await amazon.reviewState();
+      return yield { done: true, ok: true, stage: "dry_run_stopped_before_place", total_usd: total, card_last4: last4, card_reused: Boolean(card.reused), paying: review.paying };
+    }
     yield step(stage, "Placing the order");
     const placed = (await guardedPlaceOrder(last4)) as Record<string, unknown>;
     if (!placed.ok) return yield fail(stage, String(placed.error ?? "Order wasn't placed"), { card_last4: last4 });

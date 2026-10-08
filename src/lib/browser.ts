@@ -1,7 +1,8 @@
 import "server-only";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { MockVaultDriver, startBridge, type BridgeHandle } from "@1claw/browser-bridge";
+import { LocalVaultDriver, MockVaultDriver, startBridge, type BridgeHandle } from "@1claw/browser-bridge";
 import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-core";
+import { ARIA_TREE_SCRIPT } from "./ariaTree.generated";
 
 /**
  * Browser automation through 1Claw's browser-bridge: Chromium is launched by the
@@ -10,7 +11,8 @@ import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-c
  * gate refuses, so everything here is built from Runtime.evaluate + Input events.
  */
 
-type Session = { bridge: BridgeHandle; browser: Browser; page: Page; cdp: CDPSession };
+type NavCounter = { count: number };
+type Session = { bridge: BridgeHandle; browser: Browser; page: Page; cdp: CDPSession; nav: NavCounter; vault: boolean };
 const g = globalThis as { __bridge?: Promise<Session> };
 
 const VIEWPORT = { width: 1280, height: 860 };
@@ -25,11 +27,22 @@ export function chromePath() {
 
 export async function launchBridgeSession(opts: { headless?: boolean } = {}): Promise<Session> {
   const headless = opts.headless ?? process.env.BROWSER_HEADLESS === "true";
+  // Encrypted local vault (1Claw browser-bridge LocalVaultDriver) holding the Amazon password,
+  // so Amazon's periodic "re-enter your password" step is filled by the bridge — the model and
+  // our code never see the password. Falls back to a no-secrets mock when not configured.
+  const vaultPath = process.env.ONECLAW_BRIDGE_VAULT;
+  const passphrase = process.env.ONECLAW_BRIDGE_VAULT_PASSPHRASE;
+  let backend: LocalVaultDriver | MockVaultDriver = new MockVaultDriver({ bindings: [] });
+  let vault = false;
+  if (vaultPath && passphrase && existsSync(vaultPath)) {
+    const local = new LocalVaultDriver({ path: vaultPath, passphrase, velocityLimit: 20 });
+    await local.open();
+    backend = local;
+    vault = true;
+  }
   const bridge = await startBridge({
     executablePath: chromePath(),
-    // No vault-backed login fills are needed for this flow — the Amazon session
-    // comes from saved cookies and the card is typed by our own server tool.
-    backend: new MockVaultDriver({ bindings: [] }),
+    backend,
     host: "127.0.0.1",
     args: [
       ...(headless ? ["--headless=new"] : []),
@@ -43,17 +56,27 @@ export async function launchBridgeSession(opts: { headless?: boolean } = {}): Pr
     ],
   });
   const browser = await puppeteer.connect({ browserWSEndpoint: bridge.url, defaultViewport: null });
-  const { page, cdp } = await openTab(browser);
-  return { bridge, browser, page, cdp };
+  const tab = await openTab(browser);
+  return { bridge, browser, ...tab, vault };
 }
 
 async function openTab(browser: Browser) {
   const page = await browser.newPage();
+  // Mirror the bridge's per-tab "generation" (bumped on main-frame navigations and same-document
+  // navigations), which a credential fill must quote — it proves the fill targets the page the
+  // decision was made for.
+  const nav: NavCounter = { count: 0 };
+  const client = (page as unknown as { _client(): CDPSession })._client();
+  const targetId = (page.target() as unknown as { _targetId: string })._targetId;
+  client.on("Page.frameNavigated", (e: { frame?: { id?: string } }) => {
+    if (e.frame?.id === targetId) nav.count++;
+  });
+  client.on("Page.navigatedWithinDocument", () => nav.count++);
   const cdp = await page.createCDPSession();
   await cdp
     .send("Emulation.setDeviceMetricsOverride", { ...VIEWPORT, deviceScaleFactor: 1, mobile: false })
     .catch(() => {});
-  return { page, cdp };
+  return { page, cdp, nav };
 }
 
 /**
@@ -202,8 +225,35 @@ export async function navigate(url: string) {
  * so the model can act by index. Cross-origin iframes (e.g. card forms) aren't
  * reachable this way; the screenshot + x/y clicks cover those.
  */
+/**
+ * Accessibility-tree snapshot (vendored from mozilla/pilo): a compact YAML of the page's
+ * roles/names with stable [ref=eN] handles (set as data-pilo-ref) and sensitive field values
+ * masked. Injected via Runtime.evaluate as an expression — no new Function, so CSP-safe and
+ * allowed by the bridge's CDP gate.
+ */
+export async function ariaSnapshot(maxChars = 14000) {
+  const { cdp } = await getBrowser();
+  const r = (await cdp.send("Runtime.evaluate", {
+    // Root at the main content (search results, product, cart, checkout) so the budget isn't spent on
+    // Amazon's header/menus; fall back to <body>. URL lines are dropped to keep the tree compact.
+    expression: `${ARIA_TREE_SCRIPT};(()=>{const root=document.querySelector('#search, #dp-container, #sc-active-cart, #checkout-main, #spc-orders, main, [role=main]')||document.body;return __askAriaTree.generateAndRenderAriaTree(root,{value:0}).split('\\n').filter(l=>!/^\\s*- \\/url:/.test(l)).join('\\n')})()`,
+    returnByValue: true,
+  })) as { result?: { value?: unknown }; exceptionDetails?: { text?: string } };
+  if (r.exceptionDetails || typeof r.result?.value !== "string") {
+    throw new Error(`aria snapshot failed: ${r.exceptionDetails?.text ?? "no result"}`);
+  }
+  const tree = r.result.value as string;
+  return tree.length > maxChars ? `${tree.slice(0, maxChars)}\n… (truncated)` : tree;
+}
+
 export async function snapshot() {
   const { page } = await getBrowser();
+  try {
+    const tree = await ariaSnapshot();
+    return { url: page.url(), title: await page.title().catch(() => ""), tree, hint: "Act on elements by their ref (e.g. ref: \"E12\")." };
+  } catch (err) {
+    console.warn(`[browser] ${err instanceof Error ? err.message : err} — falling back to the indexed element list`);
+  }
   const data = await page.evaluate(() => {
     const sel =
       'a[href], button, input:not([type=hidden]), select, textarea, [role=button], [role=link], [role=radio], [role=checkbox], [role=option], [contenteditable=true], iframe';
@@ -248,15 +298,18 @@ export async function screenshot(): Promise<string> {
   return data;
 }
 
-async function centerOf(index: number) {
+async function centerOf(target: number | string) {
   const { page } = await getBrowser();
-  return page.evaluate((idx) => {
-    const el = document.querySelector<HTMLElement>(`[data-agent-idx="${idx}"]`);
+  return page.evaluate((t) => {
+    const el =
+      typeof t === "string"
+        ? document.querySelector<HTMLElement>(`[data-pilo-ref="${CSS.escape(t)}"]`)
+        : document.querySelector<HTMLElement>(`[data-agent-idx="${t}"]`);
     if (!el) return null;
     el.scrollIntoView({ block: "center", inline: "center" });
     const r = el.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  }, index);
+  }, target);
 }
 
 /**
@@ -288,10 +341,14 @@ async function onCheckoutReview(page: Page) {
   return /\/checkout\/|\/gp\/buy\//.test(page.url()) && !page.url().includes("/thankyou");
 }
 
-export async function click(target: { index?: number; x?: number; y?: number }) {
+export async function click(target: { ref?: string; index?: number; x?: number; y?: number }) {
   const { page } = await getBrowser();
   let pt: { x: number; y: number } | null = null;
-  if (typeof target.index === "number") {
+  if (typeof target.ref === "string") {
+    pt = await centerOf(target.ref);
+    if (!pt) return { ok: false, error: `No element [ref=${target.ref}] — take a new snapshot.` };
+    await new Promise((r) => setTimeout(r, 120));
+  } else if (typeof target.index === "number") {
     pt = await centerOf(target.index);
     if (!pt) return { ok: false, error: `No element [${target.index}] — take a new snapshot.` };
     await new Promise((r) => setTimeout(r, 120));
@@ -308,9 +365,9 @@ export async function click(target: { index?: number; x?: number; y?: number }) 
   return { ok: true, url: page.url() };
 }
 
-export async function typeText(text: string, opts: { index?: number; x?: number; y?: number; clear?: boolean; submit?: boolean }) {
+export async function typeText(text: string, opts: { ref?: string; index?: number; x?: number; y?: number; clear?: boolean; submit?: boolean }) {
   const { page } = await getBrowser();
-  if (opts.index !== undefined || opts.x !== undefined) {
+  if (opts.ref !== undefined || opts.index !== undefined || opts.x !== undefined) {
     const r = await click(opts);
     if (!r.ok) return r;
   }
@@ -331,11 +388,14 @@ export async function typeText(text: string, opts: { index?: number; x?: number;
   return { ok: true, url: page.url() };
 }
 
-export async function selectOption(index: number, option: string) {
+export async function selectOption(target: number | string, option: string) {
   const { page } = await getBrowser();
   return page.evaluate(
-    (idx, opt) => {
-      const el = document.querySelector<HTMLSelectElement>(`[data-agent-idx="${idx}"]`);
+    (t, opt) => {
+      const el =
+        typeof t === "string"
+          ? document.querySelector<HTMLSelectElement>(`[data-pilo-ref="${CSS.escape(t)}"]`)
+          : document.querySelector<HTMLSelectElement>(`[data-agent-idx="${t}"]`);
       if (!el || el.tagName !== "SELECT") return { ok: false, error: "Not a <select>" };
       const match = Array.from(el.options).find(
         (o) => o.value === opt || o.text.trim().toLowerCase() === opt.toLowerCase(),
@@ -346,7 +406,7 @@ export async function selectOption(index: number, option: string) {
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return { ok: true };
     },
-    index,
+    target,
     option,
   );
 }
@@ -373,12 +433,12 @@ export async function scroll(dy: number) {
  * the values ever passing through the model. Used for card entry.
  */
 export async function typeSecrets(
-  steps: Array<{ value: string; index?: number; x?: number; y?: number; isSelect?: boolean }>,
+  steps: Array<{ value: string; ref?: string; index?: number; x?: number; y?: number; isSelect?: boolean }>,
 ) {
   const { page } = await getBrowser();
   for (const s of steps) {
-    if (s.isSelect && s.index !== undefined) {
-      await selectOption(s.index, s.value);
+    if (s.isSelect && (s.ref !== undefined || s.index !== undefined)) {
+      await selectOption((s.ref ?? s.index)!, s.value);
       continue;
     }
     const r = await click(s);
@@ -390,4 +450,52 @@ export async function typeSecrets(
     await page.keyboard.type(s.value, { delay: 35 });
   }
   return { ok: true };
+}
+
+
+/**
+ * Fill Amazon's "re-enter your password" form through 1Claw browser-bridge's request_fill:
+ * the bridge checks the tab, frame and form-action origins against the vault entry's allowed
+ * hosts, re-checks the page generation right before typing, types the password from the
+ * encrypted vault and submits. Nothing here (or the model) ever sees the password.
+ */
+export async function fillAmazonPassword(): Promise<{ ok: boolean; status?: string; error?: string }> {
+  const s = await getBrowser();
+  if (!s.vault) return { ok: false, error: "No credential vault configured (ONECLAW_BRIDGE_VAULT)." };
+  const info = await s.page.evaluate(() => {
+    const pw = document.querySelector<HTMLInputElement>("#ap_password, input[name=password][type=password]");
+    const form = pw?.form;
+    return {
+      origin: location.origin,
+      hasPassword: Boolean(pw && pw.getBoundingClientRect().width > 0),
+      formAction: form?.action ? new URL(form.action, location.href).origin : location.origin,
+      selector: pw?.id ? `#${pw.id}` : "input[name=password][type=password]",
+    };
+  });
+  if (!info.hasPassword) return { ok: false, error: "No password field on this page." };
+  const targetId = (s.page.target() as unknown as { _targetId: string })._targetId;
+  // Our mirror of the bridge's generation can be off by one (navigations before we attached);
+  // a stale guess aborts before anything is typed, so try the nearest values.
+  const base = s.nav.count;
+  let last: { status?: string; reason?: string; message?: string } = {};
+  for (const gen of [base, base + 1, base - 1, base + 2, 0, 1].filter((v, i, a) => v >= 0 && a.indexOf(v) === i)) {
+    last = (await s.bridge.callTool(
+      "request_fill",
+      { binding_id: "amazon", target_id: targetId, selector: info.selector },
+      () => ({
+        tabOrigin: info.origin,
+        frameOrigin: info.origin,
+        formActionOrigin: info.formAction,
+        frameId: targetId,
+        generation: gen,
+        currentGeneration: gen,
+        formPath: "form",
+        fieldNames: ["password"],
+        redirectChain: [],
+      }),
+    )) as { status?: string; reason?: string; message?: string };
+    if (last.status === "filled") return { ok: true, status: "filled" };
+    if (!(last.status === "aborted" && last.reason === "generation_stale")) break;
+  }
+  return { ok: false, status: last.status, error: last.message ?? last.reason ?? "fill failed" };
 }

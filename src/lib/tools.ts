@@ -12,7 +12,8 @@ import * as oneclaw from "./oneclaw";
 const MAX_CARD_USD = Number(process.env.CARD_MAX_USD ?? 50);
 
 const locator = {
-  index: z.number().int().optional().describe("Element index from the latest snapshot"),
+  ref: z.string().optional().describe('Element ref from the latest snapshot tree, e.g. "e12" (preferred)'),
+  index: z.number().int().optional().describe("Element index from the latest snapshot (fallback list)"),
   x: z.number().optional().describe("Viewport x coordinate from the latest screenshot (use for elements inside iframes)"),
   y: z.number().optional().describe("Viewport y coordinate from the latest screenshot"),
 };
@@ -68,9 +69,10 @@ function redact<T>(v: T): T {
 }
 
 /** Page-sourced text goes to the model wrapped as untrusted external content. */
-function wrapSnapshot<T extends { text?: string; elements?: string }>(snap: T): T {
+function wrapSnapshot<T extends { text?: string; elements?: string; tree?: string }>(snap: T): T {
   return {
     ...snap,
+    ...(typeof snap.tree === "string" ? { tree: wrapExternalContent(snap.tree, "page-elements") } : {}),
     ...(typeof snap.text === "string" ? { text: wrapExternalContent(snap.text, "page-text") } : {}),
     ...(typeof snap.elements === "string" ? { elements: wrapExternalContent(snap.elements, "page-elements") } : {}),
   };
@@ -171,7 +173,7 @@ export const tools = {
         const missing = fields.filter((f) => !values[f.field]).map((f) => f.field);
         if (missing.length) return { ok: false, error: `No value available for: ${missing.join(", ")}` };
         const r = await browser.typeSecrets(
-          fields.map((f) => ({ value: values[f.field], index: f.index, x: f.x, y: f.y, isSelect: f.is_select })),
+          fields.map((f) => ({ value: values[f.field], ref: f.ref, index: f.index, x: f.x, y: f.y, isSelect: f.is_select })),
         );
         return { ...r, filled: fields.map((f) => f.field), card_last4: card.pan?.slice(-4) };
       }, "fill_payment_card"),
@@ -281,13 +283,13 @@ export const tools = {
 
   // ── Browser (via 1Claw browser-bridge) ───────────────────────────────────
   browser_navigate: tool({
-    description: "Open a URL in the agent's browser. Returns a page snapshot (indexed elements + text).",
+    description: "Open a URL in the agent's browser. Returns a page snapshot (accessibility tree with [ref=eN] handles).",
     inputSchema: z.object({ url: z.string() }),
     execute: ({ url }) => safe(async () => wrapSnapshot(await browser.navigate(url)), "browser_navigate"),
   }),
 
   browser_snapshot: tool({
-    description: "Re-read the current page: URL, title, indexed interactive elements, and visible text.",
+    description: "Re-read the current page as an accessibility tree with [ref=eN] handles (use ref to click/type).",
     inputSchema: z.object({}),
     execute: () => safe(async () => wrapSnapshot(await browser.snapshot()), "browser_snapshot"),
   }),
@@ -301,7 +303,7 @@ export const tools = {
   }),
 
   browser_click: tool({
-    description: "Click an element by snapshot index, or at x/y viewport coordinates.",
+    description: "Click an element by snapshot ref (preferred), index, or x/y viewport coordinates.",
     inputSchema: z.object(locator),
     execute: (input) => safe(() => browser.click(input), "browser_click"),
   }),
@@ -318,8 +320,8 @@ export const tools = {
 
   browser_select: tool({
     description: "Choose an option in a <select> dropdown by snapshot index.",
-    inputSchema: z.object({ index: z.number().int(), option: z.string() }),
-    execute: ({ index, option }) => safe(() => browser.selectOption(index, option), "browser_select"),
+    inputSchema: z.object({ ref: z.string().optional(), index: z.number().int().optional(), option: z.string() }),
+    execute: ({ ref, index, option }) => safe(() => browser.selectOption((ref ?? index)!, option), "browser_select"),
   }),
 
   browser_press_key: tool({
