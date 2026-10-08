@@ -6,6 +6,7 @@ import * as browser from "./browser";
 import * as cards from "./cards";
 import * as laso from "./laso";
 import * as purchase from "./purchase";
+import { wrapExternalContent } from "./promptSecurity";
 import * as oneclaw from "./oneclaw";
 
 const MAX_CARD_USD = Number(process.env.CARD_MAX_USD ?? 50);
@@ -64,6 +65,22 @@ function redact<T>(v: T): T {
     ) as T;
   }
   return v;
+}
+
+/** Page-sourced text goes to the model wrapped as untrusted external content. */
+function wrapSnapshot<T extends { text?: string; elements?: string }>(snap: T): T {
+  return {
+    ...snap,
+    ...(typeof snap.text === "string" ? { text: wrapExternalContent(snap.text, "page-text") } : {}),
+    ...(typeof snap.elements === "string" ? { elements: wrapExternalContent(snap.elements, "page-elements") } : {}),
+  };
+}
+function wrapConfirmation<T>(r: T): T {
+  const o = r as Record<string, unknown>;
+  for (const k of ["text", "confirmation"]) {
+    if (typeof o?.[k] === "string") o[k] = wrapExternalContent(o[k] as string, "order-confirmation");
+  }
+  return r;
 }
 
 /** Runs a tool with a hard timeout so a stuck page can never hang the agent, and logs timing. */
@@ -185,7 +202,7 @@ export const tools = {
         for await (const update of purchase.buyProduct(asin)) {
           last = update.stage;
           if (!update.done) console.log(`[buy_product] ${update.stage}: ${update.label}`);
-          yield redact(update);
+          yield redact(update.done ? wrapConfirmation(update) : update);
         }
       } finally {
         console.log(`[tool] buy_product ${Date.now() - started}ms (last stage: ${last})`);
@@ -259,20 +276,20 @@ export const tools = {
       "Click 'Place your order' and return the confirmation (delivery estimate, order number). " +
       "Hard-refuses unless the review page's 'Paying with' line shows the card ending in last4 and the total equals the card amount.",
     inputSchema: z.object({ last4: z.string().length(4).describe("Last 4 of the Laso/1Claw card selected for this order") }),
-    execute: ({ last4 }) => safe(() => purchase.guardedPlaceOrder(last4), "amazon_place_order"),
+    execute: ({ last4 }) => safe(async () => wrapConfirmation(await purchase.guardedPlaceOrder(last4)), "amazon_place_order"),
   }),
 
   // ── Browser (via 1Claw browser-bridge) ───────────────────────────────────
   browser_navigate: tool({
     description: "Open a URL in the agent's browser. Returns a page snapshot (indexed elements + text).",
     inputSchema: z.object({ url: z.string() }),
-    execute: ({ url }) => safe(() => browser.navigate(url), "browser_navigate"),
+    execute: ({ url }) => safe(async () => wrapSnapshot(await browser.navigate(url)), "browser_navigate"),
   }),
 
   browser_snapshot: tool({
     description: "Re-read the current page: URL, title, indexed interactive elements, and visible text.",
     inputSchema: z.object({}),
-    execute: () => safe(() => browser.snapshot(), "browser_snapshot"),
+    execute: () => safe(async () => wrapSnapshot(await browser.snapshot()), "browser_snapshot"),
   }),
 
   browser_screenshot: tool({
