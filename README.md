@@ -137,7 +137,7 @@ sequenceDiagram
 ```
 
 - **Voice in and out:** ElevenLabs. Speech-to-text uses Scribe; text-to-speech uses the Max voice.
-- **Brain:** Claude Sonnet 5, called through **1Claw Shroud**, so token usage is billed to the 1Claw org (LLM Token Billing). No Anthropic key is needed.
+- **Brain:** Claude Sonnet 5, called through **1Claw Shroud**, so token usage is billed to the 1Claw org (LLM Token Billing). No Anthropic key is needed. **Prompt caching** is on: the ~6k-token system prompt and tool list are cached, which measured 6–7 s down to 4.3 s per turn, with cached input billed at about a tenth of the normal price.
 - **Money:** the agent's own **USDC on Base**. The private key is held by 1Claw; the app only ever asks 1Claw to sign.
 - **Browser:** **1Claw browser-bridge** launches Chrome and passes every DevTools (CDP) command through an allowlist gate. Max acts in your signed-in Amazon session, inside that gate.
 
@@ -341,6 +341,7 @@ The page warms up Max's browser and runs the pre-flight check. Look for **Ready 
 | `BROWSER_HEADLESS` | `false` keeps Max's browser visible. |
 | `ONECLAW_BRIDGE_VAULT`, `ONECLAW_BRIDGE_VAULT_PASSPHRASE` | The encrypted credential vault for Amazon re-login. |
 | `BOWMARK_API_KEY` | Optional. Public product search through Bowmark. |
+| `SEARCH_PROVIDER` | `bowmark` (default when a key is set: fewer bot checks on your session) or `browser` (about 1 s faster, free). |
 | `AGENT_NAME` | Max's name in the prompt. |
 
 ## Project layout

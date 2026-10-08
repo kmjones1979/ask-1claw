@@ -14,8 +14,13 @@ import { bowmark } from "@bowmark/web";
  * the query text.
  */
 
+/**
+ * SEARCH_PROVIDER=bowmark (default when a key is set) or browser. Measured: Bowmark ~2.5–3.7s
+ * per search (metered), the bridge ~2.0s (free) — Bowmark's win here is keeping load off the
+ * signed-in session (fewer bot checks), not raw speed.
+ */
 export function enabled() {
-  return Boolean(process.env.BOWMARK_API_KEY);
+  return Boolean(process.env.BOWMARK_API_KEY) && (process.env.SEARCH_PROVIDER ?? "bowmark") === "bowmark";
 }
 
 type Product = { asin?: string; title?: string; price?: number | null; rating?: number | null; ratingCount?: number | null; sponsored?: boolean };
