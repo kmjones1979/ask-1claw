@@ -28,17 +28,54 @@ const asImage = (output: { image: string; note?: string }) => ({
   ],
 });
 
+/**
+ * Address privacy: strip street addresses, ZIP+4s and phone numbers from everything a
+ * tool returns, so the user's address never reaches the model, the transcript or the voice.
+ */
+const STREET =
+  /\b\d{1,6}\s+(?:[A-Za-z0-9.'#-]+\s+){0,6}(?:ST|STREET|AVE|AVENUE|CT|COURT|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|WAY|PL|PLACE|PKWY|PARKWAY|HWY|HIGHWAY|CIR|CIRCLE|TER|TERRACE|SQ|LOOP|TRL|TRAIL)\b\.?[^\n]*/gi;
+const CITY_STATE_ZIP = /\b[A-Za-z][A-Za-z .'-]{1,30},\s*[A-Z]{2},?\s+\d{5}(?:-\d{4})?\b/g;
+const ZIP4 = /\b\d{5}-\d{4}\b/g;
+// Amazon's header: "Deliver to Kevin\nWillis 77318" (city + ZIP).
+const DELIVER_TO = /(Deliver(?:ing)? to[^\n]*\n\s*)[A-Za-z][A-Za-z .'-]{1,30}\s+\d{5}(?:-\d{4})?/g;
+const CITY_ZIP = /\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s\d{5}(?:-\d{4})?\b(?!\s*(?:mAh|mm|pcs|count|pack))/g;
+const PHONE = /(?:Phone(?: number)?:?\s*)?‪?\+?1?[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}‬?/g;
+
+function redactText(t: string) {
+  return t
+    .replace(DELIVER_TO, "$1[address hidden]")
+    .replace(STREET, "[address hidden]")
+    .replace(CITY_STATE_ZIP, "[address hidden]")
+    .replace(ZIP4, "[zip hidden]")
+    .replace(CITY_ZIP, "[address hidden]")
+    .replace(PHONE, "[phone hidden]");
+}
+
+function redact<T>(v: T): T {
+  if (typeof v === "string") return redactText(v) as T;
+  if (Array.isArray(v)) return v.map(redact) as T;
+  if (v && typeof v === "object") {
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>).map(([k, x]) =>
+        // Screenshots stay as-is (binary); everything textual is scrubbed.
+        k === "image" ? [k, x] : [k, redact(x)],
+      ),
+    ) as T;
+  }
+  return v;
+}
+
 /** Runs a tool with a hard timeout so a stuck page can never hang the agent, and logs timing. */
 async function safe<T>(fn: () => Promise<T>, name = "tool", timeoutMs = 60_000) {
   const started = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    return redact(await Promise.race([
       fn(),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`${name} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
       }),
-    ]);
+    ]));
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error(`[tool] ${name} failed: ${error}`);
@@ -185,19 +222,26 @@ export const tools = {
   amazon_place_order: tool({
     description:
       "Click 'Place your order' and return the confirmation (delivery estimate, order number). " +
-      "Refuses unless checkout shows the card ending in last4 and the total equals the card amount.",
-    inputSchema: z.object({ last4: z.string().length(4).describe("Last 4 of the 1Claw/Laso card selected for this order") }),
+      "Hard-refuses unless the review page's 'Paying with' line shows the card ending in last4, the delivery address is the demo address, and the total equals the card amount.",
+    inputSchema: z.object({ last4: z.string().length(4).describe("Last 4 of the Laso/1Claw card selected for this order") }),
     execute: ({ last4 }) =>
       safe(async () => {
-        const summary = await amazon.checkoutSummary();
-        const paying = `${summary.payment ?? ""}`;
-        if (!new RegExp(`\\b${last4}\\b`).test(paying)) {
-          return { ok: false, error: `Refused: checkout is paying with "${paying || "unknown"}", not the card ending in ${last4}. Run amazon_select_card first.` };
+        const review = await amazon.reviewState();
+        if (!new RegExp(`\\b${last4}\\b`).test(review.paying)) {
+          return { ok: false, error: `Refused: the order would be paid with "${review.paying || "an unknown method"}", not the card ending in ${last4}. Run amazon_select_card again.` };
         }
+        const shipTo = amazon.shipToMatch();
+        if (shipTo && !review.delivering.toLowerCase().includes(shipTo.toLowerCase())) {
+          return { ok: false, error: "Refused: the delivery address isn't the demo address. Run amazon_checkout again to set it." };
+        }
+        const summary = await amazon.checkoutSummary();
         const cardTotal = amazon.lastCheckoutTotal();
         if (cardTotal && summary.order_total_usd && Math.abs(summary.order_total_usd - cardTotal) > 0.005) {
           return { ok: false, error: `Refused: order total $${summary.order_total_usd} differs from the card amount $${cardTotal}.` };
         }
+        // Re-check immediately before clicking, in case the page changed.
+        const again = await amazon.reviewState();
+        if (!new RegExp(`\\b${last4}\\b`).test(again.paying)) return { ok: false, error: "Refused: payment method changed before placing." };
         return amazon.placeOrder();
       }, "amazon_place_order"),
   }),

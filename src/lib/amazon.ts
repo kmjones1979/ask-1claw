@@ -338,7 +338,7 @@ export async function addCard(card: CardDetails, opts: { submit?: boolean } = {}
  * The payment step (/checkout/p/…/pay) lists saved cards as radio rows
  * (name="ppw-instrumentRowSelection") with a "Use this payment method" button.
  */
-export async function selectCardAtCheckout(last4: string) {
+export async function selectCardAtCheckout(last4: string, opts: { retried?: boolean } = {}): Promise<Record<string, unknown>> {
   const p = await page();
   await guardHuman();
 
@@ -386,17 +386,21 @@ export async function selectCardAtCheckout(last4: string) {
   // Amazon shows "Setting your payment method…" before moving to the review (/spc) page.
   let left = await waitForAny({ spc: "url=/spc", billing: "text=Select a billing address" }, 15_000);
   // A newly added card can make Amazon ask for its billing address: use the demo address.
-  if (left === "billing" && shipToMatch()) {
+  if (left === "billing") {
     await chooseAddressOnPage(shipToMatch());
     left = await waitForAny({ spc: "url=/spc" }, 15_000);
   }
   await waitForAny({ paying: "text=Paying with" }, 5_000);
   await guardHuman();
+  await waitForAny({ paying: "text=Paying with" }, 5_000);
+  let paying = (await reviewState()).paying;
+  if (!new RegExp(`\\b${last4}\\b`).test(paying) && !opts.retried) {
+    // Amazon can fall back to the default card after a billing-address step — select again.
+    return selectCardAtCheckout(last4, { retried: true });
+  }
+  paying = (await reviewState()).paying;
   const summary = await checkoutSummary();
-  const selected = await p.evaluate(
-    (l4) => new RegExp(`(ending in|Paying with[^\\n]{0,40}?)\\s*${l4}\\b`, "i").test(document.body.innerText),
-    last4,
-  );
+  const selected = new RegExp(`\\b${last4}\\b`).test(paying);
   return {
     ok: Boolean(left) && selected,
     selected_last4: selected ? last4 : null,
@@ -515,6 +519,10 @@ export function shipToMatch() {
  */
 async function chooseAddressOnPage(match: string) {
   const p = await page();
+  if (!match) {
+    // No override: keep Amazon's preselected (default) address and confirm it.
+    return (await clickText("Use this address")) || (await clickText("Deliver to this address"));
+  }
   const found = await p.evaluate((m) => {
     const want = m.toLowerCase();
     for (const r of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]'))) {
@@ -670,6 +678,22 @@ export async function checkoutSummary() {
   const usd = Number(summary.order_total?.match(/\$\s*([\d,]+\.\d{2})/)?.[1]?.replace(/,/g, ""));
   if (usd > 0) totals.__checkoutTotal = { usd, at: Date.now() };
   return { ...summary, order_total_usd: usd > 0 ? usd : null };
+}
+
+/**
+ * Reads exactly what the review page will charge and ship to: the single
+ * "Paying with …" line and the "Delivering to …" block. Used as a hard gate
+ * before placing an order (the payment section can list every saved card, so
+ * a loose "contains last4" check is not enough).
+ */
+export async function reviewState() {
+  const p = await page();
+  return p.evaluate(() => {
+    const t = document.body.innerText;
+    const paying = t.match(/Paying with[^\n]*/i)?.[0]?.trim() ?? "";
+    const delivering = (t.match(/Delivering to[^\n]*\n+[^\n]+/i)?.[0] ?? "").replace(/\s+/g, " ").trim();
+    return { url: location.href, paying, delivering };
+  });
 }
 
 export async function placeOrder() {
