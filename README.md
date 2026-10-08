@@ -191,11 +191,15 @@ The hand-written steps live in `src/lib/amazon.ts`: search, cart, checkout, addr
 
 ### Bowmark (public search only)
 
-[Bowmark](https://bowmark.ai) runs typed functions on live sites in its own hosted browsers.
-- `find_product` uses `bowmark.providers.amazon.searchProducts` (`POST /v1/run`).
-- Searching therefore doesn't load pages in your signed-in session, which means fewer bot checks. Bowmark sees only the query text.
-- If Bowmark fails or isn't configured, search falls back to the bridge.
-- Bowmark is **not** used for cart, card or checkout. Its sessions are its own, and the demo's security model keeps those steps in your gated browser.
+[Bowmark](https://bowmark.ai) runs typed functions on live sites in its own hosted browsers. `find_product` calls `bowmark.providers.amazon.searchProducts` through the official [`@bowmark/web`](https://www.npmjs.com/package/@bowmark/web) client (MIT, zero dependencies, typed, so argument mistakes fail before any request is sent).
+- Searching this way doesn't load pages in your signed-in session, which means fewer bot checks, and Bowmark sees only the query text.
+- Thin results (warnings, nothing usable) fall back to the bridge's own search.
+
+**Why Bowmark doesn't do the cart, card or checkout.** It's a deliberate security choice:
+1. **Your Amazon login would live on Bowmark's servers.** Bowmark's sessions are its own. Checking out there means signing in to Amazon inside Bowmark's hosted browser (its "login handoff"), so a third party would hold a cookie with full access to your account: orders, addresses, saved cards. With browser-bridge, the session stays in a Chrome on your machine, behind the CDP gate.
+2. **The card number would leave our control.** Bowmark's `browser_agent` takes only a plain-language task string, and its docs note that `bowmark.secret()` can't be passed into it. To pay, the card number would have to be in that text, going to Bowmark's agent and model in plain text. Here, the card goes from the server straight into Amazon's secure iframe, and no model ever sees it.
+3. **No checkout in its Amazon provider.** Its `addToCart` uses an anonymous guest cart, and it has no payment or order function.
+4. **Stage reliability.** `browser_agent` runs asynchronously (1–3 minutes, polled, with a 90-second cap per call) and pauses for a human at a watch link on every login.
 
 ### Ideas adapted from Mozilla pilo
 
