@@ -158,12 +158,30 @@ export type LasoCardDetails = {
   billing_address?: Record<string, string>;
 };
 
-async function getCardData(cardId: string) {
+/** Laso id_tokens last ~1h; exchange the refresh token for a fresh pair (POST /auth). */
+async function refreshSession() {
+  const s = session();
+  if (!s?.refresh_token) throw new Error("Laso session expired and there's no refresh token.");
+  const res = await fetch(`${LASO}/auth`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ grant_type: "refresh_token", refresh_token: s.refresh_token }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { id_token?: string; refresh_token?: string; user_id?: string };
+  if (!res.ok || !body.id_token) throw new Error(`Laso token refresh failed (${res.status})`);
+  saveSession({ ...s, id_token: body.id_token, refresh_token: body.refresh_token ?? s.refresh_token, user_id: body.user_id ?? s.user_id });
+}
+
+async function getCardData(cardId: string, retried = false): Promise<{ status?: string; card_details?: LasoCardDetails; error?: string }> {
   const s = session();
   if (!s?.id_token) throw new Error("No Laso session — order a card first.");
   const res = await fetch(`${LASO}/get-card-data?card_id=${encodeURIComponent(cardId)}`, {
     headers: { Authorization: `Bearer ${s.id_token}` },
   });
+  if (res.status === 401 && !retried) {
+    await refreshSession();
+    return getCardData(cardId, true);
+  }
   const body = (await res.json().catch(() => ({}))) as { status?: string; card_details?: LasoCardDetails; error?: string };
   if (!res.ok) throw new Error(`Laso get-card-data failed (${res.status}): ${body.error ?? ""}`);
   return body;

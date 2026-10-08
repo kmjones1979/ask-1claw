@@ -345,10 +345,11 @@ export async function selectCardAtCheckout(last4: string, opts: { retried?: bool
   // From the review page, open the payment step via its own "Change" link (not the address one).
   if (!p.url().includes("/pay")) {
     const opened = await p.evaluate(() => {
-      const link = Array.from(document.querySelectorAll<HTMLElement>("a, button, [role=button]")).find((e) => {
-        const label = `${e.getAttribute("aria-label") ?? ""} ${e.innerText ?? ""}`.toLowerCase();
-        return e.getBoundingClientRect().width > 0 && label.includes("change") && label.includes("payment");
-      });
+      const els = Array.from(document.querySelectorAll<HTMLElement>("a, button, [role=button]")).filter((e) => e.getBoundingClientRect().width > 0);
+      // Amazon's own payment "Change" link, by its slot id / aria-label (a loose text match hits the wrong element).
+      const link =
+        els.find((e) => e.getAttribute("data-csa-c-slot-id") === "checkout-change-payselect") ??
+        els.find((e) => /^change payment method$/i.test((e.getAttribute("aria-label") ?? "").trim()));
       link?.setAttribute("data-agent-target", "1");
       return Boolean(link);
     });
