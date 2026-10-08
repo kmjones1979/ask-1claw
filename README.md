@@ -132,7 +132,7 @@ sequenceDiagram
   App->>BB: place order
   BB->>AZ: Place your order
   AZ-->>App: confirmation + delivery date
-  App-->>Max: delivered by <date> (address redacted)
+  App-->>Max: delivered by {date} (address redacted)
   Max-->>You: "Done! Arriving Tuesday to your default address."
 ```
 
