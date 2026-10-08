@@ -19,10 +19,24 @@ export default function Agent() {
   });
   const busy = status === "submitted" || status === "streaming";
 
-  // Launch the agent's browser (signed in to Amazon) as soon as the page opens.
-  useEffect(() => {
-    void fetch("/api/warmup", { method: "POST" }).catch(() => {});
+  // Launch the agent's browser (signed in to Amazon), then run the pre-flight check.
+  const [ready, setReady] = useState<{ ok: boolean; checks: { name: string; ok: boolean; detail: string }[] } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const runPreflight = useCallback(async () => {
+    setChecking(true);
+    try {
+      setReady(await (await fetch("/api/ready")).json());
+    } catch {
+      setReady({ ok: false, checks: [{ name: "App", ok: false, detail: "pre-flight check failed" }] });
+    } finally {
+      setChecking(false);
+    }
   }, []);
+  useEffect(() => {
+    void fetch("/api/warmup", { method: "POST" })
+      .catch(() => {})
+      .finally(() => void runPreflight());
+  }, [runPreflight]);
 
   // Speak each text part once it has finished streaming, so the agent narrates
   // progress ("checking my wallet…") during long multi-step purchases.
@@ -97,6 +111,23 @@ export default function Agent() {
           Ask Max
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => !busy && void runPreflight()}
+            title={ready?.checks.map((c) => `${c.ok ? "✓" : "✕"} ${c.name}: ${c.detail}`).join("\n") ?? "Checking…"}
+            className={`rounded-full border px-3 py-1.5 text-xs ${
+              checking || !ready
+                ? "border-claw-border text-claw-muted"
+                : ready.ok
+                  ? "border-claw-ok/40 text-claw-ok"
+                  : "border-claw-red/60 text-claw-red-soft"
+            }`}
+          >
+            {checking || !ready
+              ? "Checking…"
+              : ready.ok
+                ? "Ready ✓"
+                : `${ready.checks.filter((c) => !c.ok && c.name !== "Bowmark search").length} issue(s)`}
+          </button>
           <button
             onClick={() => setVoiceOn((v) => !v)}
             className="rounded-full border border-claw-border px-3 py-1.5 text-xs text-white/80 hover:bg-claw-card-2"

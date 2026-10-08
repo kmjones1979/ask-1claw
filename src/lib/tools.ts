@@ -2,6 +2,7 @@ import "server-only";
 import { tool } from "ai";
 import { z } from "zod";
 import * as amazon from "./amazon";
+import * as bowmark from "./bowmark";
 import * as browser from "./browser";
 import * as cards from "./cards";
 import * as laso from "./laso";
@@ -186,8 +187,17 @@ export const tools = {
     inputSchema: z.object({ query: z.string() }),
     execute: ({ query }) =>
       safe(async () => {
+        // Public search via Bowmark (keeps load off the signed-in browser); fall back to the bridge.
+        if (bowmark.enabled()) {
+          try {
+            const results = await bowmark.amazonSearch(query, 6);
+            if (results.length) return { source: "bowmark", results };
+          } catch (err) {
+            console.warn(`[find_product] Bowmark failed, using the bridge: ${err instanceof Error ? err.message : err}`);
+          }
+        }
         const r = await amazon.search(query);
-        return { results: r.results.slice(0, 6) };
+        return { source: "browser", results: r.results.slice(0, 6) };
       }, "find_product"),
   }),
 
