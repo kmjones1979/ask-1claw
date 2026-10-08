@@ -5,6 +5,7 @@ import * as amazon from "./amazon";
 import * as browser from "./browser";
 import * as cards from "./cards";
 import * as laso from "./laso";
+import * as purchase from "./purchase";
 import * as oneclaw from "./oneclaw";
 
 const MAX_CARD_USD = Number(process.env.CARD_MAX_USD ?? 50);
@@ -159,6 +160,40 @@ export const tools = {
       }, "fill_payment_card"),
   }),
 
+  // ── Fast path: two calls for the whole purchase ────────────────────────
+  find_product: tool({
+    description:
+      "Search Amazon and return the top few non-sponsored products (asin, title, price, rating). Use this first, then pick one and call buy_product.",
+    inputSchema: z.object({ query: z.string() }),
+    execute: ({ query }) =>
+      safe(async () => {
+        const r = await amazon.search(query);
+        return { results: r.results.slice(0, 6) };
+      }, "find_product"),
+  }),
+
+  buy_product: tool({
+    description:
+      "Buy one product end to end in a single call: add to cart, read the checkout total, get a Laso card for exactly that total " +
+      "(reusing an unspent one; daily USDC limit enforced), add it to Amazon, select it, verify the payment line, and place the order. " +
+      "Returns the delivery estimate. Safe to call again after fixing a problem (e.g. a human check) — it resumes without double-buying.",
+    inputSchema: z.object({ asin: z.string().describe("ASIN from find_product") }),
+    execute: async function* ({ asin }) {
+      const started = Date.now();
+      let last = "";
+      try {
+        for await (const update of purchase.buyProduct(asin)) {
+          last = update.stage;
+          if (!update.done) console.log(`[buy_product] ${update.stage}: ${update.label}`);
+          yield redact(update);
+        }
+      } finally {
+        console.log(`[tool] buy_product ${Date.now() - started}ms (last stage: ${last})`);
+        void browser.saveCookies().catch(() => {});
+      }
+    },
+  }),
+
   // ── Amazon fast path (one call per checkout stage) ──────────────────────
   amazon_search: tool({
     description: "Search Amazon. Returns the top non-sponsored results (asin, title, price, rating) and who is signed in.",
@@ -222,28 +257,9 @@ export const tools = {
   amazon_place_order: tool({
     description:
       "Click 'Place your order' and return the confirmation (delivery estimate, order number). " +
-      "Hard-refuses unless the review page's 'Paying with' line shows the card ending in last4, the delivery address is the demo address, and the total equals the card amount.",
+      "Hard-refuses unless the review page's 'Paying with' line shows the card ending in last4 and the total equals the card amount.",
     inputSchema: z.object({ last4: z.string().length(4).describe("Last 4 of the Laso/1Claw card selected for this order") }),
-    execute: ({ last4 }) =>
-      safe(async () => {
-        const review = await amazon.reviewState();
-        if (!new RegExp(`\\b${last4}\\b`).test(review.paying)) {
-          return { ok: false, error: `Refused: the order would be paid with "${review.paying || "an unknown method"}", not the card ending in ${last4}. Run amazon_select_card again.` };
-        }
-        const shipTo = amazon.shipToMatch();
-        if (shipTo && !review.delivering.toLowerCase().includes(shipTo.toLowerCase())) {
-          return { ok: false, error: "Refused: the delivery address isn't the demo address. Run amazon_checkout again to set it." };
-        }
-        const summary = await amazon.checkoutSummary();
-        const cardTotal = amazon.lastCheckoutTotal();
-        if (cardTotal && summary.order_total_usd && Math.abs(summary.order_total_usd - cardTotal) > 0.005) {
-          return { ok: false, error: `Refused: order total $${summary.order_total_usd} differs from the card amount $${cardTotal}.` };
-        }
-        // Re-check immediately before clicking, in case the page changed.
-        const again = await amazon.reviewState();
-        if (!new RegExp(`\\b${last4}\\b`).test(again.paying)) return { ok: false, error: "Refused: payment method changed before placing." };
-        return amazon.placeOrder();
-      }, "amazon_place_order"),
+    execute: ({ last4 }) => safe(() => purchase.guardedPlaceOrder(last4), "amazon_place_order"),
   }),
 
   // ── Browser (via 1Claw browser-bridge) ───────────────────────────────────

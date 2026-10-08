@@ -351,6 +351,8 @@ type Step = { label: string; status: "running" | "done" | "error" };
 // Friendly labels for the tool calls the audience sees on stage.
 const TOOL_LABELS: Record<string, string> = {
   get_wallet_balance: "Checking USDC balance on Base",
+  find_product: "Searching Amazon",
+  buy_product: "Order placed",
   issue_card: "Buying a card from Laso with USDC",
   wait_for_card: "Waiting for the card",
   fill_payment_card: "Entering card securely",
@@ -376,9 +378,21 @@ function toolSteps(m: UIMessage): Step[] {
     if (p.type === "dynamic-tool") name = p.toolName;
     else if (p.type.startsWith("tool-")) name = p.type.slice(5);
     if (!name || !("state" in p)) continue;
-    const status =
+    const output = "output" in p ? (p.output as { done?: boolean; ok?: boolean; label?: string } | undefined) : undefined;
+    const preliminary = "preliminary" in p && Boolean((p as { preliminary?: boolean }).preliminary);
+    let status: Step["status"] =
       p.state === "output-available" ? "done" : p.state === "output-error" ? "error" : "running";
-    const label = TOOL_LABELS[name] ?? name.replace(/[_-]/g, " ");
+    // buy_product streams its stages as preliminary results: show the live stage.
+    if (name === "buy_product" && output) {
+      if (preliminary || output.done === false) status = "running";
+      else if (output.ok === false) status = "error";
+    }
+    const label =
+      name === "buy_product" && output?.label && status === "running"
+        ? output.label
+        : name === "buy_product" && status === "error"
+          ? "Purchase stopped"
+          : (TOOL_LABELS[name] ?? name.replace(/[_-]/g, " "));
     // Collapse consecutive repeats (e.g. many snapshots) into one chip.
     const prev = steps.at(-1);
     if (prev?.label === label) prev.status = status;
