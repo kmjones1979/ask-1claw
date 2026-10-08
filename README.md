@@ -33,21 +33,107 @@ On the `integration/fast-path-pilo` branch, the purchase runs as a single server
 
 ## How it works
 
+### Architecture
+
+```mermaid
+flowchart LR
+  user(["🎤 You (on stage)"])
+
+  subgraph laptop["💻 Your laptop"]
+    direction TB
+    ui["Ask Max web UI<br/>(Portrait / Chat, push-to-talk)"]
+    subgraph server["Next.js server"]
+      direction TB
+      chat["/api/chat<br/>agent loop (AI SDK)"]
+      tools["Tools<br/>find_product · buy_product<br/>+ step-by-step fallback"]
+      guards["Guards<br/>daily USDC limit · exact total<br/>Paying-with gate · redaction<br/>untrusted-content wrapper"]
+      chat --> tools --> guards
+    end
+    subgraph bb["1Claw browser-bridge"]
+      direction TB
+      gate["CDP allowlist gate"]
+      vault[("Encrypted vault<br/>Amazon password")]
+      chrome["Chrome<br/>your signed-in Amazon session"]
+      gate --> chrome
+      vault -. "request_fill<br/>(origin + generation checked)" .-> chrome
+    end
+    ui <--> chat
+    guards -- "cart · checkout · add card · place order" --> gate
+  end
+
+  subgraph oneclaw["🔐 1Claw"]
+    direction TB
+    shroud["Shroud LLM proxy<br/>(token billing)"]
+    keys["Agent signing key (HSM)<br/>USDC on Base"]
+  end
+
+  subgraph third["🌐 Third parties"]
+    direction TB
+    eleven["ElevenLabs<br/>speech ⇄ text"]
+    claude["Claude Sonnet 5"]
+    bowmark["Bowmark<br/>public product search"]
+    laso["Laso Finance<br/>prepaid card (x402)"]
+    base[("Base<br/>USDC settlement")]
+    amazon["amazon.com"]
+  end
+
+  user <--> ui
+  ui <-- "audio" --> eleven
+  chat <--> shroud <--> claude
+  tools -- "search query only" --> bowmark
+  guards -- "sign EIP-3009 transfer" --> keys
+  guards -- "x402 payment → card" --> laso
+  laso --> base
+  chrome <--> amazon
 ```
- you (voice) ──► ElevenLabs STT ──► Next.js /api/chat ──► Claude (via 1Claw Shroud, token-billed)
-                                         │
-                                         ├─ find_product ──► Bowmark (public Amazon search, hosted)
-                                         │                     └─ fallback: browser-bridge
-                                         │
-                                         └─ buy_product (one server-side pipeline)
-                                               ├─ Amazon cart / checkout ──► 1Claw browser-bridge ──► Chrome
-                                               │                              (gated CDP, your signed-in session)
-                                               ├─ Laso card ──► x402 payment, EIP-3009 signed by 1Claw
-                                               │                (agent's key never leaves 1Claw)
-                                               ├─ Amazon re-login ──► browser-bridge request_fill from an
-                                               │                       encrypted vault (password never seen)
-                                               └─ place order (hard-gated)
- Max's reply ◄── ElevenLabs TTS ◄────────┘
+
+**Who sees what:**
+- **The model** sees product info, totals and the card's last 4 digits. It never sees card numbers, the Amazon password, your address or keys.
+- **Bowmark** sees only the search text.
+- **Laso** sees a signed USDC payment from the agent's wallet.
+- **The private key** never leaves 1Claw.
+
+### One purchase, end to end
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor You
+  participant Max as Max (Claude via Shroud)
+  participant App as Next.js tools
+  participant BM as Bowmark
+  participant BB as browser-bridge + Chrome
+  participant OC as 1Claw
+  participant L as Laso
+  participant AZ as Amazon
+
+  You->>Max: "Buy me a pack of Pokemon cards on Amazon"
+  Max->>App: find_product("pokemon booster pack")
+  App->>BM: searchProducts (query only)
+  BM-->>App: products
+  App-->>Max: top results
+  Max-->>You: "Grabbing the Chaos Rising pack…"
+  Max->>App: buy_product(asin)
+  App->>BB: add to cart, go to checkout
+  BB->>AZ: cart → checkout
+  opt Amazon asks for the password again
+    BB->>AZ: vault fills password (model never sees it)
+  end
+  AZ-->>App: order total $X
+  App->>App: daily-limit check · reuse unspent card?
+  App->>L: GET /get-card?amount=X → 402 challenge
+  App->>OC: sign TransferWithAuthorization (Base USDC)
+  OC-->>App: signature (key stays in 1Claw)
+  App->>L: paid retry (PAYMENT-SIGNATURE)
+  L-->>App: card issued → card details (server-side only)
+  App->>BB: add card in Your Payments (secure iframe)
+  App->>BB: select card ending ####
+  App->>BB: verify "Paying with … ####" and total = card amount
+  App->>BB: place order
+  BB->>AZ: Place your order
+  AZ-->>App: confirmation + delivery date
+  App-->>Max: delivered by <date> (address redacted)
+  Max-->>You: "Done! Arriving Tuesday to your default address."
 ```
 
 - **Voice in and out:** ElevenLabs. Speech-to-text uses Scribe; text-to-speech uses the Max voice.
