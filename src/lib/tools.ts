@@ -3,6 +3,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import * as amazon from "./amazon";
 import * as bowmark from "./bowmark";
+import * as bowmarkCheckout from "./bowmarkCheckout";
 import * as browser from "./browser";
 import * as cards from "./cards";
 import * as laso from "./laso";
@@ -222,6 +223,27 @@ export const tools = {
       }
     },
   }),
+
+  ...(process.env.EXPERIMENT_BOWMARK_CHECKOUT === "true"
+    ? {
+        buy_via_bowmark: tool({
+          description:
+            "EXPERIMENTAL, only when the user explicitly asks to use Bowmark for checkout: Bowmark's hosted browser agent " +
+            "does the whole Amazon checkout with a single-use Laso card. Slow (minutes) and needs the user to sign in at a watch link.",
+          inputSchema: z.object({ asin: z.string(), expected_price_usd: z.number() }),
+          execute: async function* ({ asin, expected_price_usd }) {
+            const started = Date.now();
+            try {
+              for await (const u of bowmarkCheckout.buyViaBowmark(asin, expected_price_usd)) yield redact(u);
+            } catch (err) {
+              yield { done: true, ok: false, error: err instanceof Error ? err.message : String(err) };
+            } finally {
+              console.log(`[tool] buy_via_bowmark ${Date.now() - started}ms`);
+            }
+          },
+        }),
+      }
+    : {}),
 
   // ── Amazon fast path (one call per checkout stage) ──────────────────────
   amazon_search: tool({

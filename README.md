@@ -201,6 +201,17 @@ The hand-written steps live in `src/lib/amazon.ts`: search, cart, checkout, addr
 3. **No checkout in its Amazon provider.** Its `addToCart` uses an anonymous guest cart, and it has no payment or order function.
 4. **Stage reliability.** `browser_agent` runs asynchronously (1–3 minutes, polled, with a 90-second cap per call) and pauses for a human at a watch link on every login.
 
+#### Experiment: Bowmark for the full checkout (`EXPERIMENT_BOWMARK_CHECKOUT=true`)
+
+`buy_via_bowmark` hands the whole checkout to Bowmark's hosted `browser_agent`, using a single-use Laso card loaded with the price plus 15% headroom. It's off by default. Measured on the same product, 2026-10-08:
+
+| From the product page to Amazon's checkout sign-in wall | Time |
+|---|---|
+| **browser-bridge** (`amazon.addToCart` then `goToCheckout`) | **9.1 s** |
+| **Bowmark `browser_agent`** | **109.3 s** (about 12× slower), and it then waits for a human to sign in at its watch link |
+
+Bowmark's hosted agent explores the page fresh each run, which suits one-off form flows but not a timed stage checkout. `buy_product` stays the demo path.
+
 ### Ideas adapted from Mozilla pilo
 
 - **Page reader (accessibility tree).** `browser_snapshot` returns a compact YAML accessibility tree with `[ref=E12]` handles, built from pilo's Playwright-derived aria-tree code (vendored in `vendor/pilo-ariaTree`).
@@ -341,6 +352,7 @@ The page warms up Max's browser and runs the pre-flight check. Look for **Ready 
 | `BROWSER_HEADLESS` | `false` keeps Max's browser visible. |
 | `ONECLAW_BRIDGE_VAULT`, `ONECLAW_BRIDGE_VAULT_PASSPHRASE` | The encrypted credential vault for Amazon re-login. |
 | `BOWMARK_API_KEY` | Optional. Public product search through Bowmark. |
+| `EXPERIMENT_BOWMARK_CHECKOUT` | `true` exposes `buy_via_bowmark` (Bowmark's hosted agent does the checkout). Off by default. |
 | `SEARCH_PROVIDER` | `bowmark` (default when a key is set: fewer bot checks on your session) or `browser` (about 1 s faster, free). |
 | `AGENT_NAME` | Max's name in the prompt. |
 
